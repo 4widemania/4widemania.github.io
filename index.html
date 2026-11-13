@@ -1,0 +1,1059 @@
+<html>
+  <head>
+    <title>4-WIDE MANIA</title>
+    <style>
+      html::-webkit-scrollbar {display: none;}
+      html {
+        -ms-overflow-style: none;
+        scrollbar-width: none;
+      }
+      canvas {
+        width: 100%;
+        height: 100%;
+      }
+    </style>
+  </head>
+  <body>
+    <canvas id="game"></canvas>
+    <script>
+      const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+      const ctx2 = new (window.AudioContext || window.webkitAudioContext)();
+      const sounds = {};
+      async function load(name, file) { // load sound
+      	const response = await fetch(`https://scratchy2.github.io/prototypestudios/assets/${file}`);
+      	if (!response.ok) throw new Error(`failed to load ${name}: ${response.status}`);
+      	const data = await response.arrayBuffer();
+      	sounds[name] = await ctx2.decodeAudioData(data);
+      }
+      function sound(name, rate=1, when=ctx2.currentTime, vol=1) { // play sound
+      	const buffer = sounds[name];
+      	if (!buffer) return;
+      	const play = () => {
+      		const source = ctx2.createBufferSource();
+      		const gain = ctx2.createGain();
+      		source.buffer = buffer;
+      		source.playbackRate.value = rate;
+      		gain.gain.value = vol;
+      		source.connect(gain);
+      		gain.connect(ctx2.destination);
+      		source.start(Math.max(when, ctx2.currentTime));
+      		return source;
+      	};
+      	if (ctx2.state != "running") {
+      		ctx2.resume().then(play);
+      		return;
+      	}
+      	return play();
+      }
+      (async () => {await Promise.all([ // preload sounds
+      	load("A1lines", "4_1LINES.mp3"),
+      	load("A2lines", "4_2LINES.mp3"),
+      	load("A4lines", "4_4LINES.mp3"),
+      	load("A8lines", "4_8LINES.mp3"),
+      	load("A15lines", "4_15LINES.mp3"),
+      	load("A24lines", "4_24LINES.mp3"),
+      	load("A1linesSpin", "4_1LINES_SPIN.mp3"),
+      	load("A2linesSpin", "4_2LINES_SPIN.mp3"),
+      	load("A4linesSpin", "4_4LINES_SPIN.mp3"),
+      	load("A8linesSpin", "4_8LINES_SPIN.mp3"),
+      	load("A15linesSpin", "4_15LINES_SPIN.mp3"),
+      	load("A24linesSpin", "4_24LINES_SPIN.mp3"),
+      	load("Aplace", "4_place.wav")
+      ])})();
+      function aic(bot) { // create game
+      	return {
+      		ai: bot,
+      		vol: bot ? 0.35 : 1,
+      		board: Array.from({length: bh}, () => Array(bw).fill(null)),
+      		curr: {},
+      		held: {},
+      		bag: bagf([]),
+      		hold: true,
+      		lockat: 0,
+      		resets: 15,
+      		combo: 0,
+      		surge: 0,
+      		sent: 0,
+      		grace: 0,
+      		last: 0,
+      		rotated: false,
+      		dead: false,
+      		pending: [],
+      		foe: null,
+      		cfg: null,
+      		plan: null,
+      		born: 0,
+      		next: 0,
+      		step: 0,
+      		left: 0,
+      		top: 0,
+      		size: 0,
+      		by: 0,
+      		shake: 0,
+      		fx: [],
+      		fxt: 0
+      	};
+      }
+      function start() { // start game
+      	bw = setup.w;
+      	bh = setup.h;
+      	full = (1 << bw) - 1;
+      	spawnx = Math.floor(bw / 2) - 2;
+      	p = aic(!setup.versus);
+      	ai = aic(true);
+      	p.foe = ai;
+      	ai.foe = p;
+      	p.cfg = setup.cpus[0];
+      	ai.cfg = setup.cpus[1];
+      	tuned = ai;
+      	screen = "play";
+      	spawn(p);
+      	spawn(ai);
+      }
+      function setlevel(cfg, i) { // set ai level
+      	cfg.level = Math.min(levels.length - 1, Math.max(0, i));
+      	cfg.pps = levels[cfg.level].pps;
+      }
+      function bump(cfg, d) { // set ai pps
+      	cfg.pps = Math.min(20, Math.max(0.1, Math.round((cfg.pps + d) * 10) / 10));
+      }
+      function rows() { // menu rows
+      	const rs = [{type: "mode"}];
+      	if (setup.versus) rs.push({type: "skill", cpu: 1, label: "CPU skill"}, {type: "pps", cpu: 1, label: "CPU speed"});
+      	else rs.push({type: "skill", cpu: 0, label: "Left CPU skill"}, {type: "pps", cpu: 0, label: "Left CPU speed"}, {type: "skill", cpu: 1, label: "Right CPU skill"}, {type: "pps", cpu: 1, label: "Right CPU speed"});
+      	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "pieces"}, {type: "start"});
+      	return rs;
+      }
+      function immobile(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // immobile check
+      	return collision(g, matrix, x - 1, y) && collision(g, matrix, x + 1, y) && collision(g, matrix, x, y - 1) && collision(g, matrix, x, y + 1);
+      }
+      function touching(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // touching other block
+      	for (let row = 0; row < matrix.length; row++) {
+      		for (let col = 0; col < matrix[row].length; col++) {
+      			if (!matrix[row][col]) continue;
+      			for (const [dx, dy] of [[-1, 0], [1, 0], [0, -1], [0, 1]]) {
+      				const bx = x + col + dx;
+      				const by = y + row + dy;
+      				if (bx >= 0 && bx < bw && by >= 0 && by < bh && g.board[by][bx] != null) return true;
+      			}
+      		}
+      	}
+      	return false;
+      }
+      function collision(g, piece, x, y) { // collision check
+      	for (let row = 0; row < piece.length; row++) {
+      		for (let col = 0; col < piece[row].length; col++) {
+      			if (!piece[row][col]) continue;
+      			const bx = x + col;
+      			const by = y + row;
+      			if (bx < 0 || bx >= bw || by >= bh) return true;
+      			if (by >= 0 && g.board[by][bx] != null) return true;
+      		}
+      	}
+      	return false;
+      }
+      function power(lines, combo, spin) { // # of lines sent
+      	let c = (lines - 1 + combo / 20 + (spin ? 1 : 0)) * (0.5 + combo / 2);
+      	if (spin) c *= 2;
+      	return Math.floor(c);
+      }
+      function cancel(g, n) { // garbage cancel
+      	while (n > 0 && g.pending.length > 0) {
+      		const chunk = g.pending[0];
+      		const take = Math.min(chunk.n, n);
+      		chunk.n -= take;
+      		n -= take;
+      		if (chunk.n == 0) g.pending.shift();
+      	}
+      	return n;
+      }
+      function garbage(g) { // incoming garbage
+      	let n = 0;
+      	while (g.pending.length > 0 && n < cap) {
+      		const chunk = g.pending[0];
+      		const take = Math.min(chunk.n, cap - n);
+      		for (let i = 0; i < take; i++) {
+      			if (g.board[0].some(cell => cell != null)) g.dead = true;
+      			g.board.shift();
+      			g.board.push(Array.from({length: bw}, (_, x) => x == chunk.hole ? null : trash));
+      		}
+      		chunk.n -= take;
+      		n += take;
+      		if (chunk.n == 0) g.pending.shift();
+      	}
+      	if (n > 0) hit(g, n);
+      }
+      function clear(g, spin) { // clear lines
+      	let c = 0;
+      	const gone = []; // rows being cleared
+      	for (let r = bh - 1; r >= 0; r--) {
+      		if (g.board[r].every(cell => cell != null)) {
+      			gone.push({y: r - c, cells: g.board[r].slice()});
+      			g.board.splice(r, 1);
+      			g.board.unshift(Array(bw).fill(null));
+      			c += 1;
+      			r += 1;
+      		}
+      	}
+      	if (c == 0) {
+      		g.combo = 0;
+      		g.surge = 0;
+      		return 0;
+      	}
+      	const lines = c;
+      	burst(g, gone, lines);
+      	g.combo += 1;
+      	c = power(lines, g.combo, spin);
+      	g.surge += c;
+      	g.sent += c;
+      	let name;
+      	if (c < 2) name = "A1lines";
+      	else if (c < 4) name = "A2lines";
+      	else if (c < 8) name = "A4lines";
+      	else if (c < 15) name = "A8lines";
+      	else if (c < 24) name = "A15lines";
+      	else name = "A24lines";
+      	sound(`${name}${spin ? "Spin" : ""}`, 1, ctx2.currentTime, g.vol);
+      	const left = cancel(g, c);
+      	if (left > 0) g.foe.pending.push({n: left, hole: Math.floor(Math.random() * bw)});
+      	return lines;
+      }
+      function spawn(g) { // spawn next piece
+      	bagf(g.bag);
+      	g.rotated = false;
+      	const next = g.bag.shift();
+      	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: 0, rot: 0};
+      	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y)) g.dead = true;
+      }
+      function lock(g) { // lock piece
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
+      		if (g.resets > 0) {g.lockat = performance.now() + 500; g.resets -= 1}
+      	} else {
+      		g.lockat = 0;
+      	}
+      }
+      function reset(piece) { // piece back to initial state
+      	if (piece.name == "UL") piece.name = "U";
+      	piece.matrix = pieces[piece.name];
+      	piece.source = pieces[piece.name].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20})));
+      	piece.x = spawnx;
+      	piece.y = 0;
+      	piece.rot = 0;
+      }
+      function swap(g) { // swap with hold piece
+      	if (!g.held.name) {
+      		g.held = g.curr;
+      		spawn(g);
+      	}
+      	else {
+      		[g.held, g.curr] = [g.curr, g.held];
+      		g.rotated = false;
+      	}
+      	reset(g.held);
+      	g.hold = false;
+      	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y)) g.dead = true;
+      }
+      function place(g) { // place down piece
+      	if (Date.now() < g.grace) return;
+      	const spin = g.rotated && (setup.spinall ? touching(g) : immobile(g));
+      	for (let row = 0; row < g.curr.matrix.length; row++) {
+      		for (let col = 0; col < g.curr.matrix[row].length; col++) {
+      			if (!g.curr.matrix[row][col]) continue;
+      			const bx = g.curr.x + col;
+      			const by = g.curr.y + row;
+      			if (by < 0) {
+      				g.dead = true;
+      				return; // game over
+      			}
+      			const source = g.curr.source[row][col];
+      			g.board[by][bx] = {name: g.curr.name, sx: source.sx, sy: source.sy, q: source.q, rot: g.curr.rot};
+      		}
+      	}
+      	sound("Aplace", 1, ctx2.currentTime, g.vol);
+      	g.hold = true;
+      	g.lockat = 0;
+      	g.resets = 15;
+      	g.grace = g.ai ? 0 : Date.now() + 90;
+      	const lines = clear(g, spin);
+      	if (lines == 0) garbage(g);
+      	bounce(g, lines);
+      	spawn(g);
+      }
+      function move(g, dx, dy, kick=false) { // move piece
+      	if (collision(g, g.curr.matrix, g.curr.x + dx, g.curr.y + dy) && !kick) {
+      		lock(g);
+      		return false;
+      	}
+      	g.curr.x += dx;
+      	g.curr.y += dy;
+      	if (!kick) g.rotated = false;
+      	lock(g);
+      	return true;
+      }
+      function drop(g) { // hard drop
+      	while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
+      		g.curr.y += 1;
+      		g.rotated = false;
+      	}
+      	place(g);
+      }
+      function rotatem(matrix, dir="cw") { // rotate matrix
+      	if (dir == "ccw") {
+      		return matrix[0].map((_, col) => matrix.map(row => row[row.length - 1 - col]));
+      	} else if (dir == "180") {
+      		return matrix.map(row => row.slice().reverse()).reverse();
+      	} else if (dir == "cw") {
+      		return matrix[0].map((_, col) => matrix.map(row => row[col]).reverse());
+      	}
+      }
+      function rotatep(g, dir="cw") { // rotate piece
+      	const matrix = rotatem(g.curr.matrix, dir);
+      	const source = rotatem(g.curr.source, dir);
+      	for (const [dx, dy] of kicks[dir]) {
+      		if (!collision(g, matrix, g.curr.x + dx, g.curr.y + dy)) {
+      			g.curr.matrix = matrix;
+      			g.curr.source = source;
+      			g.curr.x += dx;
+      			g.curr.y += dy;
+      			g.curr.rot = (g.curr.rot + (dir == "ccw" ? 3 : dir == "180" ? 2 : 1)) % 4;
+      			g.rotated = true;
+      			lock(g);
+      			return true;
+      		}
+      	}
+      	return false;
+      }
+      function morph(g) { // toggle U and UL
+      	const to = twin[g.curr.name];
+      	if (!to) return false;
+      	const matrix = shapes[to][g.curr.rot];
+      	let source = sprites[to];
+      	for (let i = 0; i < g.curr.rot; i++) source = rotatem(source, "cw");
+      	for (const [dx, dy] of kicks.cw) {
+      		if (!collision(g, matrix, g.curr.x + dx, g.curr.y + dy)) {
+      			g.curr.name = to;
+      			g.curr.matrix = matrix;
+      			g.curr.source = source;
+      			g.curr.x += dx;
+      			g.curr.y += dy;
+      			g.rotated = true;
+      			lock(g);
+      			return true;
+      		}
+      	}
+      	return false;
+      }
+      function drawc(g, cell, x, y, left=g.left, top=g.top, size=g.size) { // draw cell
+      	const image = images[cell.name];
+      	if (!image.complete || !image.naturalWidth) return;
+      	ctx.save();
+      	ctx.translate(left + (x + 0.5) * size, top + (y + 0.5) * size);
+      	ctx.rotate((cell.rot + (cell.q || 0)) * Math.PI / 2);
+      	ctx.drawImage(image, cell.sx, cell.sy, 20, 20, size / -2, size / -2, size, size);
+      	ctx.restore();
+      }
+      function drawm(g, name, ox, top, left, ytop, cs) { // draw pieces
+      	pieces[name].forEach((r, y) => r.forEach((v, x) => {
+      		if (v) drawc(g, {name: name, sx: x * 20, sy: y * 20, rot: 0}, x + ox, top + y, left, ytop, cs);
+      	}));
+      }
+      function arrow(x, y, s, color) { // draw arrows for queues
+      	ctx.fillStyle = color;
+      	ctx.fillRect(x - s * 0.15, y, s * 0.3, s * 0.5);
+      	ctx.beginPath();
+      	ctx.moveTo(x - s * 0.45, y + s * 0.5);
+      	ctx.lineTo(x + s * 0.45, y + s * 0.5);
+      	ctx.lineTo(x, y + s);
+      	ctx.closePath();
+      	ctx.fill();
+      }
+      function drawb(g) { // draw board
+      	for (let y = 0; y < bh; y++) {
+      		for (let x = 0; x < bw; x++) {
+      			if (g.board[y][x]) drawc(g, g.board[y][x], x, y);
+      		}
+      	}
+      }
+      function drawp(g, piece, source, x, y, name, rot) { // draw piece
+      	for (let row = 0; row < piece.length; row++) {
+      		for (let col = 0; col < piece[row].length; col++) {
+      			if (!piece[row][col]) continue;
+      			const cell = source[row][col];
+      			drawc(g, {name: name, sx: cell.sx, sy: cell.sy, q: cell.q, rot: rot}, x + col, y + row);
+      		}
+      	}
+      }
+      function shuffle(arr) { // fisher-yates algorithm
+      	for (let i = arr.length - 1; i > 0; i--) {
+      		const j = Math.floor(Math.random() * (i + 1));
+      		[arr[i], arr[j]] = [arr[j], arr[i]];
+      	}
+      	return arr;
+      }
+      function bagp() { // pieces chosen in the menu
+      	const list = names.filter(n => setup.pieces[n]);
+      	return list.length ? list : names.slice();
+      }
+      function bagf(bag) { // maintain bag
+      	const pool = bagp();
+      	while (bag.length < 16) bag.push(...shuffle(pool.slice()));
+      	return bag;
+      }
+      function bagt(i) { // change pieces in bag
+      	const n = names[i];
+      	if (setup.pieces[n] && bagp().length == 1) return;
+      	setup.pieces[n] = !setup.pieces[n];
+      }
+      function fits(rows, shape, x, y) {
+      	for (const [cx, cy] of shape) {
+      		const bx = x + cx;
+      		const by = y + cy;
+      		if (bx < 0 || bx >= bw || by >= bh) return false;
+      		if (by >= 0 && rows[by] >> bx & 1) return false;
+      	}
+      	return true;
+      }
+      function stick(rows, abs) {
+      	const next = rows.slice();
+      	for (const [x, y] of abs) next[y] |= 1 << x;
+      	const out = [];
+      	let lines = 0;
+      	for (let y = bh - 1; y >= 0; y--) {
+      		if (next[y] == full) lines += 1;
+      		else out.push(next[y]);
+      	}
+      	while (out.length < bh) out.push(0);
+      	return {rows: out.reverse(), lines: lines};
+      }
+      function drops(rows, name) {
+      	const out = [];
+      	const seen = new Set();
+      	for (let i = 0; i < (twin[name] ? 8 : 4); i++) {
+      		const shape = cells[i < 4 ? name : twin[name]][i % 4];
+      		for (let x = -3; x <= bw; x++) {
+      			if (!fits(rows, shape, x, 0)) continue;
+      			let y = 0;
+      			while (fits(rows, shape, x, y + 1)) y += 1;
+      			const key = shape.map(([cx, cy]) => (y + cy) * bw + x + cx).sort((a, b) => a - b).join();
+      			if (seen.has(key)) continue;
+      			seen.add(key);
+      			out.push(stick(rows, shape.map(([cx, cy]) => [x + cx, y + cy])));
+      		}
+      	}
+      	return out;
+      }
+      function evaluate(rows) { // score the scenario
+      	let holes = 0;
+      	let total = 0;
+      	let bump = 0;
+      	let peak = 0;
+      	let last = 0;
+      	for (let x = 0; x < bw; x++) {
+      		let h = 0;
+      		for (let y = 0; y < bh; y++) {
+      			if (rows[y] >> x & 1) {
+      				if (!h) h = bh - y;
+      			} else if (h) holes += 1;
+      		}
+      		total += h;
+      		peak = Math.max(peak, h);
+      		if (x > 0) bump += Math.abs(h - last);
+      		last = h;
+      	}
+      	return holes * -7 - total * 0.2 - bump * 0.7 - Math.max(0, peak - bh / 2) * 4;
+      }
+      function reach(g, name, x, y, rot) {
+      	const out = [];
+      	if (collision(g, shapes[name][rot], x, y)) return out;
+      	const seen = new Set();
+      	const done = new Set();
+      	const id = (x, y, rot, flag, name) => ((((rot * (bw + 8) + x + 4) * (bh + 8) + y + 4) * 2 + flag) * 2) + (name == "UL" ? 1 : 0);
+      	const queue = [{x, y, rot, flag: 0, name, path: []}];
+      	seen.add(id(x, y, rot, 0, name));
+      	for (let q = 0; q < queue.length; q++) {
+      		const s = queue[q];
+      		const shape = shapes[s.name][s.rot];
+      		let y = s.y;
+      		while (!collision(g, shape, s.x, y + 1)) y += 1;
+      		const spin = (y == s.y ? s.flag : 0) && (setup.spinall ? touching(g, shape, s.x, y) : immobile(g, shape, s.x, y));
+      		const abs = cells[s.name][s.rot].map(([cx, cy]) => [s.x + cx, y + cy]);
+      		if (abs.every(([, by]) => by >= 0)) {
+      			const key = abs.map(([bx, by]) => by * bw + bx).sort((a, b) => a - b).join() + (spin ? "s" : "");
+      			if (!done.has(key)) {
+      				done.add(key);
+      				out.push({cells: abs, spin: !!spin, path: s.path});
+      			}
+      		}
+      		const next = [];
+      		for (const [input, dx] of [["left", -1], ["right", 1]]) {
+      			if (!collision(g, shape, s.x + dx, s.y)) next.push([input, s.x + dx, s.y, s.rot, 0, s.name]);
+      		}
+      		if (!collision(g, shape, s.x, s.y + 1)) next.push(["down", s.x, s.y + 1, s.rot, 0, s.name]);
+      		for (const [input, turn] of [["cw", 1], ["ccw", 3], ["180", 2]]) {
+      			const rot = (s.rot + turn) % 4;
+      			for (const [dx, dy] of kicks[input]) {
+      				if (!collision(g, shapes[s.name][rot], s.x + dx, s.y + dy)) {
+      					next.push([input, s.x + dx, s.y + dy, rot, 1, s.name]);
+      					break;
+      				}
+      			}
+      		}
+      		if (twin[s.name]) { // X to toggle U and UL
+      			for (const [dx, dy] of kicks.cw) {
+      				if (!collision(g, shapes[twin[s.name]][s.rot], s.x + dx, s.y + dy)) {
+      					next.push(["x", s.x + dx, s.y + dy, s.rot, 1, twin[s.name]]);
+      					break;
+      				}
+      			}
+      		}
+      		for (const [input, nx, ny, rot, flag, nm] of next) {
+      			const k = id(nx, ny, rot, flag, nm);
+      			if (seen.has(k)) continue;
+      			seen.add(k);
+      			queue.push({x: nx, y: ny, rot: rot, flag: flag, name: nm, path: [...s.path, input]});
+      		}
+      	}
+      	return out;
+      }
+      function child(node, done, spin, held, i, first) {
+      	const combo = done.lines > 0 ? node.combo + 1 : 0;
+      	const atk = done.lines > 0 ? power(done.lines, combo, spin) : 0;
+      	const total = node.total + atk * 3 + done.lines * 2;
+      	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, value: total + evaluate(done.rows)};
+      }
+      function think(g) { // decide which move is best
+      	const look = levels[g.cfg.level].look;
+      	const seq = [g.curr.name, ...g.bag.slice(0, look + 1)];
+      	const rows = g.board.map(r => r.reduce((m, c, x) => c ? m | 1 << x : m, 0));
+      	const held = g.held.name || null;
+      	const roots = [{hold: false, name: g.curr.name, x: g.curr.x, y: g.curr.y, rot: g.curr.rot, i: 1, held: held}];
+      	if (g.hold) {
+      		if (held) roots.push({hold: true, name: held, x: spawnx, y: 0, rot: 0, i: 1, held: g.curr.name});
+      		else if (seq[1]) roots.push({hold: true, name: seq[1], x: spawnx, y: 0, rot: 0, i: 2, held: g.curr.name});
+      	}
+      	let beam = [];
+      	for (const root of roots) {
+      		for (const c of reach(g, root.name, root.x, root.y, root.rot)) {
+      			const node = {combo: g.combo, total: -c.path.length * 0.05};
+      			beam.push(child(node, stick(rows, c.cells), c.spin, root.held, root.i, {hold: root.hold, path: c.path}));
+      		}
+      	}
+      	if (beam.length == 0) return ["drop"];
+      	beam = beam.sort((a, b) => b.value - a.value).slice(0, width);
+      	for (let d = 1; d <= look; d++) {
+      		const next = [];
+      		for (const node of beam) {
+      			const opts = [{name: seq[node.i], held: node.held, i: node.i + 1}];
+      			if (node.held) opts.push({name: node.held, held: seq[node.i], i: node.i + 1});
+      			else if (seq[node.i + 1]) opts.push({name: seq[node.i + 1], held: seq[node.i], i: node.i + 2});
+      			for (const o of opts) {
+      				if (!o.name) continue;
+      				for (const done of drops(node.rows, o.name)) next.push(child(node, done, false, o.held, o.i));
+      			}
+      		}
+      		if (next.length == 0) break;
+      		beam = next.sort((a, b) => b.value - a.value).slice(0, width);
+      	}
+      	const best = beam[0].first;
+      	return [...(best.hold ? ["hold"] : []), ...best.path, "drop"];
+      }
+      function cpu(g, time) { // ai play
+      	if (g.dead || !g.curr.name) return;
+      	const period = 1000 / g.cfg.pps;
+      	if (!g.plan) {
+      		g.plan = think(g);
+      		g.born = time;
+      		const n = g.plan.length - 1;
+      		const r = g.plan.filter((a, i) => i > 0 && a == g.plan[i - 1] && (a == "left" || a == "right" || a == "down")).length;
+      		g.step = Math.min(100, Math.max(20, (period * 0.6 - 30 * r) / Math.max(n - r, 1)));
+      		g.next = time + Math.min(150, period * 0.15);
+      	}
+      	if (time < g.next) return;
+      	const input = g.plan[0];
+      	if (input == "drop" && time < g.born + period) return;
+      	g.plan.shift();
+      	acts[input](g);
+      	if (input == "drop") {
+      		g.plan = null;
+      		return;
+      	}
+      	const again = g.plan[0] == input && (input == "left" || input == "right" || input == "down");
+      	g.next = time + (again ? 30 : g.step) * (0.85 + Math.random() * 0.3);
+      }
+      function tick(g, time) { // gravity
+      	if (time - g.last > 1000 / gravity) {
+      		move(g, 0, 1);
+      		g.last = time;
+      	}
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
+      		if (!g.lockat) g.lockat = time + 500;
+      		if (time >= g.lockat) place(g);
+      	} else {
+      		g.lockat = 0;
+      	}
+      }
+      function bounce(g, lines) { // bounciness from pieces
+      	g.by = Math.max(g.by, Math.min(fxcfg.bounceMax, fxcfg.bounceBase + fxcfg.bounceLine * lines));
+      }
+      function hit(g, n) { // shake from garbage
+      	g.shake = Math.min(fxcfg.shakeMax, g.shake + fxcfg.shakeMax * (1 - Math.exp(-n / fxcfg.shakeScale)));
+      }
+      function burst(g, gone, lines) { // create particles
+      	const boost = 1 + 0.2 * Math.min(lines, 4);
+      	for (const row of gone) {
+      		row.cells.forEach((c, x) => {
+      			const side = ((x + 0.5) / bw - 0.5) * 10 * boost;
+      			for (let q = 0; q < 4; q++) {
+      				const qx = q & 1;
+      				const qy = q >> 1;
+      				const life = 0.55 + Math.random() * 0.4;
+      				g.fx.push({
+      					kind: 0, cell: c, qx: qx, qy: qy,
+      					x: x + 0.5 + (qx ? 0.25 : -0.25), y: row.y + 0.5 + (qy ? 0.25 : -0.25),
+      					vx: side + (qx ? 1 : -1) * Math.random() * 2 + (Math.random() - 0.5) * 2,
+      					vy: -(3 + Math.random() * 7) * boost,
+      					a: 0, va: (Math.random() - 0.5) * 12, life: life, max: life
+      				});
+      			}
+      		});
+      		for (let i = 0; i < Math.ceil(bw / 2); i++) {
+      			const life = 0.35 + Math.random() * 0.4;
+      			g.fx.push({
+      				kind: 1, x: Math.random() * bw, y: row.y + 0.5,
+      				vx: (Math.random() - 0.5) * 8 * boost, vy: -(2 + Math.random() * 7) * boost,
+      				a: 0, va: 0, life: life, max: life
+      			});
+      		}
+      	}
+      	if (g.fx.length > fxcfg.maxfx) g.fx.splice(0, g.fx.length - fxcfg.maxfx);
+      }
+      function fxstep(g, now) { // bounce, shake and particles tick
+      	const dt = g.fxt ? Math.min(0.05, (now - g.fxt) / 1000) : 0;
+      	g.fxt = now;
+      	if (dt <= 0) return;
+      	g.by *= Math.exp(-fxcfg.bounceDecay * dt);
+      	if (g.by < 0.0005) g.by = 0;
+      	g.shake *= Math.exp(-fxcfg.shakeDecay * dt);
+      	if (g.shake < 0.002) g.shake = 0;
+      	for (const f of g.fx) {
+      		f.vy += fxcfg.gravity * dt;
+      		f.x += f.vx * dt;
+      		f.y += f.vy * dt;
+      		f.a += f.va * dt;
+      		f.life -= dt;
+      	}
+      	g.fx = g.fx.filter(f => f.life > 0);
+      }
+      function fxoffset(g, now) { // board offset in px
+      	const wobble = Math.sin(now * 0.088) * 0.6 + Math.sin(now * 0.137 + 1.7) * 0.4;
+      	return {x: g.shake * g.size * wobble, y: g.by * g.size};
+      }
+      function drawfx(g) { // draw particles
+      	const s = g.size;
+      	for (const f of g.fx) {
+      		const a = Math.min(1, f.life / f.max * 1.6);
+      		if (f.kind) {
+      			const d = s * 0.14 * (0.5 + a / 2);
+      			ctx.globalAlpha = a;
+      			ctx.fillStyle = "#ffffff";
+      			ctx.fillRect(g.left + f.x * s - d / 2, g.top + f.y * s - d / 2, d, d);
+      			continue;
+      		}
+      		const image = images[f.cell.name];
+      		if (!image || !image.complete || !image.naturalWidth) continue;
+      		const ox = (f.qx ? 0.25 : -0.25) * s;
+      		const oy = (f.qy ? 0.25 : -0.25) * s;
+      		ctx.globalAlpha = a;
+      		ctx.save();
+      		ctx.translate(g.left + f.x * s, g.top + f.y * s);
+      		ctx.rotate(f.a);
+      		ctx.scale(0.6 + a * 0.4, 0.6 + a * 0.4);
+      		ctx.beginPath();
+      		ctx.rect(s / -4, s / -4, s / 2, s / 2);
+      		ctx.clip();
+      		ctx.translate(-ox, -oy);
+      		ctx.rotate(((f.cell.rot || 0) + (f.cell.q || 0)) * Math.PI / 2);
+      		ctx.drawImage(image, f.cell.sx, f.cell.sy, 20, 20, s / -2, s / -2, s, s);
+      		ctx.restore();
+      	}
+      	ctx.globalAlpha = 1;
+      }
+      function gridlines(g) { // draw gridlines on the board
+      	ctx.strokeStyle = "#626079";
+      	ctx.lineWidth = 1;
+      	ctx.beginPath();
+      	for (let x = 0; x <= bw; x++) {
+      		const px = Math.round(g.left + x * g.size) + 0.5;
+      		ctx.moveTo(px, g.top);
+      		ctx.lineTo(px, g.top + bh * g.size);
+      	}
+      	for (let y = 0; y <= bh; y++) {
+      		const py = Math.round(g.top + y * g.size) + 0.5;
+      		ctx.moveTo(g.left, py);
+      		ctx.lineTo(g.left + bw * g.size, py);
+      	}
+      	ctx.stroke();
+      }
+      function draw(g) { // draw everything
+      	const now = performance.now();
+      	fxstep(g, now);
+      	const brw = bw * g.size;
+      	const brh = bh * g.size;
+      	ctx.globalAlpha = 1;
+      	const off = fxoffset(g, now);
+      	ctx.save();
+      	ctx.translate(off.x, off.y); // bounce and shake everything
+      	ctx.fillStyle = "#03000f";
+      	ctx.fillRect(g.left, g.top, brw, brh);
+      	gridlines(g);
+      	drawb(g);
+      	if (g.curr.name) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y, g.curr.name, g.curr.rot);
+      	if (!g.ai && !g.dead) {
+      		ctx.globalAlpha = 0.54;
+      		let gdy = 0;
+      		while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + gdy)) gdy += 1;
+      		gdy -= 1;
+      		if (gdy > 0) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y + gdy, g.curr.name, g.curr.rot);
+      		ctx.globalAlpha = 1;
+      	}
+      	const incoming = Math.min(g.pending.reduce((a, c) => a + c.n, 0), bh);
+      	ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
+      	ctx.fillRect(g.left - 8, g.top + brh - incoming * g.size, 6, incoming * g.size);
+      	drawfx(g);
+      	ctx.restore();
+      	ctx.globalAlpha = 1;
+      	const qs = Math.min(g.size * 0.7, brh / 20);
+      	const ql = g.left + brw + 20;
+      	ctx.fillStyle = "#03000f";
+      	ctx.fillRect(ql, g.top, 4 * qs, 14 * qs);
+      	for (let i = 0; i < 5; i++) {
+      		const name = g.bag[i];
+      		const top = 12 - 3 * i;
+      		if (i == 0) {ctx.shadowColor = "rgba(255, 255, 255, 0.85)"; ctx.shadowBlur = qs * 0.7;} // glow on the next piece
+      		drawm(g, name, name == "I" || name == "O" ? 0 : 0.5, top, ql, g.top, qs);
+      		ctx.shadowBlur = 0;
+      		ctx.shadowColor = "transparent";
+      		if (i < 4) for (let x = 0; x < 4; x++) drawc(g, trash, x, top - 1, ql, g.top, qs);
+      	}
+      	arrow(ql + 2 * qs, g.top + 14.3 * qs, qs * 1.2, "#33ff33");
+      	const hy = g.top + 15.8 * qs;
+      	if (g.held.name) {
+      		ctx.globalAlpha = g.hold ? 1 : 0.54;
+      		drawm(g, g.held.name, g.held.name == "I" || g.held.name == "O" ? 0 : 0.5, 0, ql, hy, qs);
+      		ctx.globalAlpha = 1;
+      	}
+      	arrow(ql + 2 * qs, hy + 2.3 * qs, qs * 1.2, "#ff3333");
+      	let offset = `${g.combo} Combo`.length * -8.5;
+      	ctx.font = "bold 24px Kanchenjunga";
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.fillText(`${g.combo} Combo`, g.left - 60 + offset, g.top + 30);
+      	offset = `${g.surge} Surge`.length * -8.5;
+      	ctx.fillText(`${g.surge} Surge`, g.left - 60 + offset, g.top + 65);
+      	offset = `${g.sent} Sent`.length * -8.5;
+      	ctx.fillText(`${g.sent} Sent`, g.left - 60 + offset, g.top + 100);
+      }
+      function drawmenu(cw, ch) { // draw menu options
+      	canvas.width = cw;
+      	canvas.height = ch;
+      	ctx.fillStyle = "#120038";
+      	ctx.fillRect(0, 0, cw, ch);
+      	const rs = rows();
+      	ctx.textAlign = "center";
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.font = "bold 64px Kanchenjunga";
+      	ctx.fillText("4-WIDE MANIA", cw / 2, ch * 0.12);
+      	const top = ch * 0.12 + 70;
+      	const gap = Math.min(55, (ch * 0.8 - top - 50) / rs.length);
+      	rs.forEach((row, i) => {
+      		const y = top + i * gap;
+      		const cfg = setup.cpus[row.cpu];
+      		let text = "Start";
+      		if (row.type == "mode") text = `Mode:  < ${setup.versus ? "You vs CPU" : "CPU vs CPU"} >`;
+      		else if (row.type == "skill") text = `${row.label}:  < ${levels[cfg.level].name} (looks ${levels[cfg.level].look} ahead) >`;
+      		else if (row.type == "pps") text = `${row.label}:  < ${cfg.pps.toFixed(1)} PPS >`;
+      		else if (row.type == "width") text = `Board width:  < ${setup.w} >`;
+      		else if (row.type == "height") text = `Board height:  < ${setup.h} >`;
+      		else if (row.type == "spin") text = `Everything is a spin:  < ${setup.spinall ? "on" : "off"} >`;
+      		if (i == sel) {
+      			ctx.fillStyle = "#2a0a6b";
+      			ctx.fillRect(cw / 2 - 380, y - 26, 760, gap - 4);
+      		}
+      		ctx.fillStyle = i == sel ? "#ffffff" : "#bdb7ff";
+      		ctx.font = "bold 24px Kanchenjunga";
+      		if (row.type == "pieces") {
+      			ctx.textAlign = "right";
+      			ctx.fillText("Bag:", cw / 2 - 200, y);
+      			ctx.textAlign = "center";
+      			names.forEach((n, k) => {
+      				const cs = 12;
+      				const sx = cw / 2 - 190 + k * 56;
+      				const filled = pieces[n].flatMap((r, py) => r.flatMap((v, px) => v ? [[px, py]] : []));
+      				const minx = Math.min(...filled.map(c => c[0]));
+      				const maxx = Math.max(...filled.map(c => c[0]));
+      				const miny = Math.min(...filled.map(c => c[1]));
+      				ctx.globalAlpha = setup.pieces[n] ? 1 : 0.25;
+      				drawm(null, n, (56 / cs - (maxx - minx + 1)) / 2 - minx, -miny, sx, y - 20, cs);
+      				ctx.globalAlpha = 1;
+      				if (i == sel && k == bagc) {
+      					ctx.strokeStyle = "#ffffff";
+      					ctx.lineWidth = 2;
+      					ctx.strokeRect(sx + 2, y - 23, 52, 29);
+      				}
+      			});
+      			return;
+      		}
+      		ctx.fillText(text, cw / 2, y);
+      	});
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.font = "16px Kanchenjunga";
+      	const y = top + rs.length * gap + 20;
+      	ctx.fillText("Up/Down  select     Left/Right  change     Enter  start", cw / 2, y);
+      	ctx.fillText("Shift + Left/Right = ±1 pps or ±5 size", cw / 2, y + 25);
+      	ctx.fillText("Bag: Left/Right  pick     Enter/Space  toggle on/off", cw / 2, y + 50);
+      	ctx.fillText("Bag: [piece letter]  toggle on/off", cw / 2, y + 75);
+      	ctx.textAlign = "start";
+      }
+      function render(time) { // render board
+      	ctx.globalAlpha = 1;
+      	const cw = window.innerWidth;
+      	const ch = window.innerHeight;
+      	if (screen == "menu") {
+      		drawmenu(cw, ch);
+      		requestAnimationFrame(render);
+      		return;
+      	}
+      	if (!p.dead && !ai.dead) {
+      		if (p.ai) cpu(p, time);
+      		else tick(p, time);
+      		if (!p.dead) cpu(ai, time);
+      	}
+      	const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / bh) * 0.95);
+      	const brw = bw * size;
+      	const brh = bh * size;
+      	canvas.width = cw;
+      	canvas.height = ch;
+      	ctx.fillStyle = "#120038";
+      	ctx.fillRect(0, 0, cw, ch);
+      	const gx = (cw - (brw * 2 + size * 5.6 + 560)) / 2;
+      	p.left = gx + 140;
+      	ai.left = p.left + brw + size * 2.8 + 380;
+      	for (const g of [p, ai]) {
+      		g.size = size;
+      		g.top = (ch - brh) / 2;
+      		draw(g, ch - brh);
+      	}
+      	const mid = p.left + brw + size * 2.8 + 140;
+      	const bots = setup.versus ? [ai] : [p, ai];
+      	ctx.textAlign = "center";
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.font = "bold 32px Kanchenjunga";
+      	ctx.fillText(setup.versus ? "VS CPU" : "CPU VS CPU", mid, ch - brh + 40);
+      	bots.forEach((g, i) => {
+      		const y = ch - brh + 80 + i * 60;
+      		const lv = levels[g.cfg.level];
+      		ctx.font = "bold 22px Kanchenjunga";
+      		ctx.fillText(`${bots.length > 1 && g == tuned ? "> " : ""}${bots.length > 1 ? (g == p ? "Left " : "Right ") : ""}${lv.name}`, mid, y);
+      		ctx.font = "16px Kanchenjunga";
+      		ctx.fillText(`${g.cfg.pps.toFixed(1)} PPS, looks ${lv.look} ahead`, mid, y + 25);
+      	});
+      	ctx.font = "16px Kanchenjunga";
+      	const hints = ["1-0  skill", "- = speed (Shift: ±1)", ...(bots.length > 1 ? ["Tab  switch cpu"] : []), "R  restart", "M  menu", ...(setup.spinall ? ["everything is a spin"] : []), ...(bagp().length < names.length ? [`bag: ${bagp().join(" ")}`] : [])];
+      	hints.forEach((h, i) => ctx.fillText(h, mid, ch - brh + 80 + bots.length * 60 + 20 + i * 25));
+      	if (p.dead || ai.dead) {
+      		ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+      		ctx.fillRect(0, 0, cw, ch);
+      		ctx.fillStyle = "#bdb7ff";
+      		ctx.font = "bold 64px Kanchenjunga";
+      		const msg = p.dead && ai.dead ? "DRAW" : setup.versus ? (ai.dead ? "YOU WIN" : "YOU LOSE") : (ai.dead ? "LEFT CPU WINS" : "RIGHT CPU WINS");
+      		ctx.fillText(msg, cw / 2, ch / 2);
+      		ctx.font = "bold 24px Kanchenjunga";
+      		ctx.fillText("press R to restart or M for the menu", cw / 2, ch / 2 + 40);
+      	}
+      	ctx.textAlign = "start";
+      	requestAnimationFrame(render);
+      }
+      const canvas = document.querySelector("canvas");
+      const ctx = canvas.getContext("2d");
+      const names = ["O", "T", "S", "Z", "L", "J", "I", "U"];
+      const images = {};
+      for (let name of [...names, "UL", "garbage"]) {
+      	images[name] = new Image();
+      	images[name].src = `https://scratchy2.github.io/prototypestudios/assets/4_${name}.png`;
+      }
+      const pieces = {
+      	"O": [[0, 1, 1], [0, 1, 1], [0, 0, 0]],
+      	"T": [[0, 1, 0], [1, 1, 1], [0, 0, 0]],
+      	"S": [[0, 1, 1], [1, 1, 0], [0, 0, 0]],
+      	"Z": [[1, 1, 0], [0, 1, 1], [0, 0, 0]],
+      	"L": [[0, 0, 1], [1, 1, 1], [0, 0, 0]],
+      	"J": [[1, 0, 0], [1, 1, 1], [0, 0, 0]],
+      	"I": [[0, 0, 0, 0], [1, 1, 1, 1], [0, 0, 0, 0], [0, 0, 0, 0]],
+      	"U": [[1, 0, 1], [1, 1, 1], [0, 0, 0]],
+      	"UL": [[1, 0, 0], [1, 0, 0], [1, 1, 1]]
+      };
+      const kicks = {
+      	"ccw": [[0, 0], [-1, 0], [1, 0], [0, 1], [-1, 1], [1, 1], [-2, 0], [-2, 1], [2, 0], [2, 1], [-1, 2], [0, 2], [1, 2], [2, 2], [-2, 2], [-1, -1], [0, -1], [1, -1], [2, -1], [-2, -1], [-1, -2], [-2, -2], [0, -2], [1, -2], [2, -2]],
+      	"180": [[0, 0], [0, 1], [-1, 0], [1, 0], [-1, 1], [1, 1], [0, 2], [-1, 2], [1, 2], [-2, 2], [2, 2], [-2, 1], [2, 1], [-2, 0], [2, 0], [-1, -1], [1, -1], [0, -1], [0, -2]],
+      	"cw": [[0, 0], [1, 0], [-1, 0], [0, 1], [1, 1], [-1, 1], [2, 0], [2, 1], [-2, 0], [-2, 1], [1, 2], [0, 2], [-1, 2], [-2, 2], [2, 2], [1, -1], [0, -1], [-1, -1], [-2, -1], [2, -1], [1, -2], [2, -2], [0, -2], [-1, -2], [-2, -2]],
+      };
+      const shapes = {};
+      const cells = {};
+      for (const name in pieces) {
+      	shapes[name] = [pieces[name]];
+      	for (let r = 1; r < 4; r++) shapes[name].push(rotatem(shapes[name][r - 1], "cw"));
+      	cells[name] = shapes[name].map(m => m.flatMap((row, cy) => row.flatMap((v, cx) => v ? [[cx, cy]] : [])));
+      }
+      const twin = {U: "UL", UL: "U"};
+      const sprites = {};
+      for (const name in pieces) sprites[name] = pieces[name].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20, q: 0})));
+      let bw = 4;
+      let bh = 24;
+      let full = (1 << bw) - 1;
+      let spawnx = Math.floor(bw / 2) - 2;
+      const cap = 8;
+      const width = 10;
+      const fxcfg = {
+      	bounceBase: 0.12, // board bounciness
+      	bounceLine: 0.08, // extra bounciness per line
+      	bounceMax: 0.5, // max bounciness
+      	bounceDecay: 9, // how fast the board glides back to initial
+      	shakeMax: 0.4, // max shake from garbage
+      	shakeScale: 4, // lines of garbage to reach 1-1/e
+      	shakeDecay: 4.5, // how fast the shake decays
+      	gravity: 28, // particle gravity
+      	maxfx: 700 // max particles
+      };
+      const trash = {name: "garbage", sx: 0, sy: 0, rot: 0};
+      const levels = [
+      	{name: "Very Easy", look: 1, pps: 0.5},
+      	{name: "Easy", look: 1, pps: 0.8},
+      	{name: "Medium", look: 2, pps: 1},
+      	{name: "Hard", look: 2, pps: 1.5},
+      	{name: "Very Hard", look: 3, pps: 1.5},
+      	{name: "Expert", look: 3, pps: 2},
+      	{name: "Master", look: 4, pps: 2.5},
+      	{name: "Grandmaster", look: 5, pps: 3},
+      	{name: "Impossible", look: 5, pps: 4},
+      	{name: "Inhumane", look: 10, pps: 4},
+      ];
+      const acts = {
+      	hold: g => g.hold && swap(g),
+      	left: g => move(g, -1, 0),
+      	right: g => move(g, 1, 0),
+      	down: g => move(g, 0, 1),
+      	cw: g => rotatep(g, "cw"),
+      	ccw: g => rotatep(g, "ccw"),
+      	"180": g => rotatep(g, "180"),
+      	drop: g => drop(g),
+      	x: g => morph(g),
+      };
+      const setup = {versus: true, w: bw, h: bh, spinall: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: [{level: 0, pps: levels[0].pps}, {level: 0, pps: levels[0].pps}]};
+      let screen = "menu";
+      let sel = 0;
+      let bagc = 0;
+      let p; let ai; let tuned;
+      let pres = {};
+      let gravity = 1;
+      let last = 0;
+      let int; let time;
+      const font = new FontFace("Kanchenjunga", "url(https://fonts.gstatic.com/s/kanchenjunga/v2/RWmPoKKd5fUmrILiWsjCI6TSroEH.woff2)");
+      document.fonts.add(font);
+      let loop = requestAnimationFrame(render);
+      window.onkeydown = (event) => {
+      	event.preventDefault();
+      	if (event.repeat) return;
+      	pres[event.key] = true;
+      	const step = event.key == "-" ? -0.1 : event.key == "=" ? 0.1 : event.key == "_" ? -1 : event.key == "+" ? 1 : 0;
+      	if (screen == "menu") {
+      		const rs = rows();
+      		const row = rs[sel];
+      		const cfg = setup.cpus[row.cpu];
+      		if (event.key == "ArrowUp") {
+      			sel = (sel + rs.length - 1) % rs.length;
+      		} else if (event.key == "ArrowDown") {
+      			sel = (sel + 1) % rs.length;
+      		} else if (event.key == "ArrowLeft" || event.key == "ArrowRight") {
+      			const d = event.key == "ArrowLeft" ? -1 : 1;
+      			if (row.type == "mode") setup.versus = !setup.versus;
+      			else if (row.type == "skill") setlevel(cfg, cfg.level + d);
+      			else if (row.type == "pps") bump(cfg, d * (event.shiftKey ? 1 : 0.1));
+      			else if (row.type == "width") setup.w = Math.min(20, Math.max(4, setup.w + d * (event.shiftKey ? 5 : 1)));
+      			else if (row.type == "height") setup.h = Math.min(40, Math.max(8, setup.h + d * (event.shiftKey ? 5 : 1)));
+      			else if (row.type == "spin") setup.spinall = !setup.spinall;
+      			else if (row.type == "pieces") bagc = (bagc + d + names.length) % names.length;
+      		} else if (/^[0-9]$/.test(event.key) && row.type == "skill") {
+      			setlevel(cfg, event.key == "0" ? 9 : event.key - 1);
+      		} else if (step && row.type == "pps") {
+      			bump(cfg, step);
+      		} else if (row.type == "pieces" && (event.key == "Enter" || event.key == " ")) {
+      			bagt(bagc);
+      		} else if (row.type == "pieces" && names.includes(event.key.toUpperCase())) {
+      			bagc = names.indexOf(event.key.toUpperCase());
+      			bagt(bagc);
+      		} else if (event.key == "Enter" || event.key == " ") {
+      			start();
+      		}
+      		return;
+      	}
+      	if (event.key == "r" || event.key == "R") {
+      		start();
+      		return;
+      	} else if (event.key == "m" || event.key == "M" || event.key == "Escape") {
+      		screen = "menu";
+      		return;
+      	} else if (event.key == "Tab") {
+      		if (!setup.versus) tuned = tuned == p ? ai : p;
+      		return;
+      	} else if (/^[0-9]$/.test(event.key)) {
+      		setlevel(tuned.cfg, event.key == "0" ? 9 : event.key - 1);
+      		return;
+      	} else if (step) {
+      		bump(tuned.cfg, step);
+      		return;
+      	}
+      	if (p.ai || p.dead || ai.dead) return;
+      	if (event.key == "ArrowUp") {
+      		rotatep(p, "cw");
+      	} else if (event.key == "z") {
+      		rotatep(p, "ccw");
+      	} else if (event.key == "a") {
+      		rotatep(p, "180");
+      	} else if (event.key == "x" || event.key == "X") {
+      		morph(p);
+      	} else if (event.key == "c" && p.hold) {
+      		swap(p);
+      	} else if (event.key == "ArrowLeft") {
+      		move(p, -1, 0);
+      	} else if (event.key == "ArrowRight") {
+      		move(p, 1, 0);
+      	} else if (event.key == "ArrowDown") {
+      		if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
+      	} else if (event.key == " ") {
+      		drop(p);
+      	}
+      	time = setTimeout(() => {if (!int) int = setInterval(arr, 16)}, event.key == "ArrowDown" ? 16 : 120);
+      };
+      window.onkeyup = (event) => {
+      	delete pres[event.key];
+      	clearTimeout(time);
+      }
+      function arr() {
+      	if (screen == "play" && !p.ai && !p.dead && !ai.dead) {
+      		if (pres["ArrowLeft"]) {
+      			move(p, -1, 0);
+      		} else if (pres["ArrowRight"]) {
+      			move(p, 1, 0);
+      		} else if (pres["ArrowDown"]) {
+      			if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
+      		}
+      	}
+      	if (Object.keys(pres).length == 0) {
+      		clearInterval(int);
+      		int = 0;
+      	}
+      }
+    </script>
+  </body>
+</html>
