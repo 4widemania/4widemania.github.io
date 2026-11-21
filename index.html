@@ -109,6 +109,7 @@
       	ai.cfg = setup.cpus[1];
       	tuned = ai;
       	screen = "play";
+      	inp = newinp();
       	spawn(p);
       	spawn(ai);
       }
@@ -123,7 +124,7 @@
       	const rs = [{type: "mode"}];
       	if (setup.versus) rs.push({type: "skill", cpu: 1, label: "CPU skill"}, {type: "pps", cpu: 1, label: "CPU speed"});
       	else rs.push({type: "skill", cpu: 0, label: "Left CPU skill"}, {type: "pps", cpu: 0, label: "Left CPU speed"}, {type: "skill", cpu: 1, label: "Right CPU skill"}, {type: "pps", cpu: 1, label: "Right CPU speed"});
-      	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "pieces"}, {type: "start"});
+      	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
       	return rs;
       }
       function immobile(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // immobile check
@@ -274,6 +275,7 @@
       		}
       	}
       	sound("Aplace", 1, ctx2.currentTime, g.vol);
+      	if (!g.ai) inp.dcd = performance.now() + handling.dcd * FRAME;
       	g.hold = true;
       	g.lockat = 0;
       	g.resets = 15;
@@ -778,6 +780,7 @@
       		else if (row.type == "width") text = `Board width:  < ${setup.w} >`;
       		else if (row.type == "height") text = `Board height:  < ${setup.h} >`;
       		else if (row.type == "spin") text = `Everything is a spin:  < ${setup.spinall ? "on" : "off"} >`;
+      		else if (row.type == "controls") text = "Controls and handling  >";
       		if (i == sel) {
       			ctx.fillStyle = "#2a0a6b";
       			ctx.fillRect(cw / 2 - 380, y - 26, 760, gap - 4);
@@ -821,6 +824,7 @@
       	ctx.globalAlpha = 1;
       	const cw = window.innerWidth;
       	const ch = window.innerHeight;
+      	if (screen == "controls") {drawcontrols(cw, ch); requestAnimationFrame(render); return;}
       	if (screen == "menu") {
       		drawmenu(cw, ch);
       		requestAnimationFrame(render);
@@ -828,7 +832,7 @@
       	}
       	if (!p.dead && !ai.dead) {
       		if (p.ai) cpu(p, time);
-      		else tick(p, time);
+      		else {inputstep(performance.now()); tick(p, time);}
       		if (!p.dead) cpu(ai, time);
       	}
       	const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / bh) * 0.95);
@@ -959,7 +963,200 @@
       let pres = {};
       let gravity = 1;
       let last = 0;
-      let int; let time;
+      const FRAME = 1000 / 60; // one frame in ms
+      const SDF_MAX = 100;
+      const reserved = ["r", "m", "Escape", "Tab", "-", "=", "_", "+", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9"];
+      const defaultKeys = {left: "ArrowLeft", right: "ArrowRight", soft: "ArrowDown", hard: " ", cw: "ArrowUp", ccw: "z", flip: "a", hold: "c", morph: "x"};
+      const keyNames = {left: "Move left", right: "Move right", soft: "Soft drop", hard: "Hard drop", cw: "Rotate CW", ccw: "Rotate CCW", flip: "Rotate 180", hold: "Hold", morph: "Toggle U / UL"};
+      const keyOrder = Object.keys(defaultKeys);
+      const defaultHandling = {das: 7, arr: 1, dcd: 0, sdf: 60};
+      const handlingInfo = [{key: "das", label: "DAS", max: 20}, {key: "arr", label: "ARR", max: 15}, {key: "dcd", label: "DCD", max: 15}, {key: "sdf", label: "SDF"}];
+      let keys = {...defaultKeys};
+      let handling = {...defaultHandling};
+      let inp = newinp();
+      let csel = 0;
+      let binding = null;
+      let bindmsg = "";
+      function newinp() { // input state
+      	return {order: [], dir: 0, next: 0, dcd: 0, soft: false, acc: 0, t: 0};
+      }
+      function norm(key) { // normalize key names
+      	return key.length == 1 ? key.toLowerCase() : key;
+      }
+      function keylabel(k) { // key name for display
+      	if (k == " ") return "Space";
+      	if (k.startsWith("Arrow")) return k.slice(5);
+      	return k.length == 1 ? k.toUpperCase() : k;
+      }
+      function actionof(key) { // which action a key is bound to
+      	const k = norm(key);
+      	return keyOrder.find(a => keys[a] == k) || null;
+      }
+      function savectl() { // save controls
+      	try {
+      		localStorage.setItem("4wide-controls", JSON.stringify({keys: keys, handling: {...handling, sdf: isFinite(handling.sdf) ? handling.sdf : "inf"}}));
+      	} catch (e) {}
+      }
+      function loadctl() { // load controls
+      	try {
+      		const d = JSON.parse(localStorage.getItem("4wide-controls"));
+      		if (!d) return;
+      		if (d.keys) {
+      			const k = {...defaultKeys};
+      			for (const a of keyOrder) if (typeof d.keys[a] == "string" && d.keys[a]) k[a] = d.keys[a];
+      			if (new Set(Object.values(k)).size == keyOrder.length) keys = k;
+      		}
+      		if (d.handling) {
+      			for (const h of handlingInfo) {
+      				const v = d.handling[h.key];
+      				if (h.key == "sdf") {
+      					if (v == "inf") handling.sdf = Infinity;
+      					else if (Number.isFinite(v)) handling.sdf = Math.min(SDF_MAX, Math.max(1, Math.round(v)));
+      				} else if (Number.isFinite(v)) handling[h.key] = Math.min(h.max, Math.max(0, Math.round(v)));
+      			}
+      		}
+      	} catch (e) {}
+      }
+      loadctl();
+      function dirpress(dir, now) { // left/right pressed
+      	inp.order = inp.order.filter(d => d != dir);
+      	inp.order.push(dir);
+      	inp.dir = dir;
+      	move(p, dir, 0);
+      	inp.next = now + handling.das * FRAME + (handling.das == 0 ? handling.arr * FRAME : 0);
+      }
+      function drelease(dir, now) { // left/right released
+      	inp.order = inp.order.filter(d => d != dir);
+      	if (inp.dir != dir) return;
+      	inp.dir = inp.order.length ? inp.order[inp.order.length - 1] : 0;
+      	inp.next = now + handling.das * FRAME;
+      }
+      function softstep() { // soft drop one cell
+      	if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
+      }
+      function softpress() { // soft drop pressed
+      	inp.soft = true;
+      	inp.acc = 0;
+      	if (handling.sdf == Infinity) {
+      		while (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
+      	} else softstep();
+      }
+      function inputstep(now) { // das, arr, dcd and sdf
+      	const dt = inp.t ? Math.min(100, now - inp.t) : 0;
+      	inp.t = now;
+      	if (inp.dir) {
+      		if (now < inp.dcd) inp.next = Math.max(inp.next, inp.dcd);
+      		const arrms = handling.arr * FRAME;
+      		if (now >= inp.next) {
+      			if (arrms == 0) {
+      				while (!collision(p, p.curr.matrix, p.curr.x + inp.dir, p.curr.y)) move(p, inp.dir, 0);
+      				inp.next = now;
+      			} else {
+      				let n = 0;
+      				while (now >= inp.next && n < 40) {
+      					move(p, inp.dir, 0);
+      					inp.next += arrms;
+      					n++;
+      				}
+      				if (n == 40) inp.next = now + arrms;
+      			}
+      		}
+      	}
+      	if (inp.soft) {
+      		if (handling.sdf == Infinity) {
+      			while (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
+      		} else {
+      			inp.acc += dt * gravity * handling.sdf / 1000;
+      			while (inp.acc >= 1) {
+      				inp.acc -= 1;
+      				if (collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) {inp.acc = 0; break;}
+      				move(p, 0, 1);
+      			}
+      		}
+      	}
+      }
+      function ctlrows() { // controls screen rows
+      	return [...handlingInfo.map(h => ({type: "h", info: h})), ...keyOrder.map(a => ({type: "key", action: a})), {type: "reset"}, {type: "back"}];
+      }
+      function hlabel(h) { // handling value for display
+      	if (h.key == "sdf") return handling.sdf == Infinity ? "infx" : `${handling.sdf}x`;
+      	const f = handling[h.key];
+      	return `${f}F (${Math.round(f * FRAME)} ms)`;
+      }
+      function adjh(info, d) { // change a handling value
+      	if (info.key == "sdf") {
+      		if (handling.sdf == Infinity) {
+      			if (d < 0) handling.sdf = SDF_MAX;
+      		} else {
+      			const v = handling.sdf + d;
+      			handling.sdf = v > SDF_MAX ? Infinity : Math.max(1, v);
+      		}
+      	} else handling[info.key] = Math.min(info.max, Math.max(0, handling[info.key] + d));
+      }
+      function drawcontrols(cw, ch) { // draw controls screen
+      	canvas.width = cw;
+      	canvas.height = ch;
+      	ctx.fillStyle = "#120038";
+      	ctx.fillRect(0, 0, cw, ch);
+      	const rs = ctlrows();
+      	ctx.textAlign = "center";
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.font = "bold 48px Kanchenjunga";
+      	ctx.fillText("CONTROLS", cw / 2, 70);
+      	const top = 135;
+      	const gap = Math.min(40, (ch - top - 110) / (rs.length + 1));
+      	const fs = Math.max(14, Math.min(24, gap * 0.6));
+      	rs.forEach((row, i) => {
+      		const y = top + (i + (i >= handlingInfo.length ? 0.5 : 0) + (i >= handlingInfo.length + keyOrder.length ? 0.5 : 0)) * gap;
+      		let text = "Back";
+      		if (row.type == "h") text = `${row.info.label}:  < ${hlabel(row.info)} >`;
+      		else if (row.type == "key") text = `${keyNames[row.action]}:  ${binding == row.action ? "press a key..." : `[ ${keylabel(keys[row.action])} ]`}`;
+      		else if (row.type == "reset") text = "Reset to defaults";
+      		if (i == csel) {
+      			ctx.fillStyle = "#2a0a6b";
+      			ctx.fillRect(cw / 2 - 380, y - fs * 1.05, 760, fs * 1.45);
+      		}
+      		ctx.fillStyle = i == csel ? "#ffffff" : "#bdb7ff";
+      		ctx.font = `bold ${fs}px Kanchenjunga`;
+      		ctx.fillText(text, cw / 2, y);
+      	});
+      	ctx.fillStyle = "#bdb7ff";
+      	ctx.font = "14px Kanchenjunga";
+      	ctx.fillText("Up/Down  select     Left/Right  change (Shift: ±5)     Enter  rebind     Esc  back", cw / 2, ch - 62);
+      	if (bindmsg) {
+      		ctx.fillStyle = "#ff8888";
+      		ctx.fillText(bindmsg, cw / 2, ch - 18);
+      	}
+      	ctx.textAlign = "start";
+      }
+      function ctlkey(event) { // controls screen input
+      	const rs = ctlrows();
+      	if (binding) {
+      		if (event.key == "Escape") {binding = null; bindmsg = ""; return;}
+      		const k = norm(event.key);
+      		if (["Shift", "Control", "Alt", "Meta", "CapsLock"].includes(k)) return;
+      		if (reserved.includes(k)) {bindmsg = `${keylabel(k)} is reserved`; return;}
+      		const other = keyOrder.find(a => a != binding && keys[a] == k);
+      		if (other) keys[other] = keys[binding];
+      		keys[binding] = k;
+      		binding = null;
+      		bindmsg = "";
+      		savectl();
+      		return;
+      	}
+      	const row = rs[csel];
+      	if (event.key == "ArrowUp") csel = (csel + rs.length - 1) % rs.length;
+      	else if (event.key == "ArrowDown") csel = (csel + 1) % rs.length;
+      	else if (event.key == "Escape") screen = "menu";
+      	else if ((event.key == "ArrowLeft" || event.key == "ArrowRight") && row.type == "h") {
+      		adjh(row.info, (event.key == "ArrowLeft" ? -1 : 1) * (event.shiftKey ? 5 : 1));
+      		savectl();
+      	} else if (event.key == "Enter" || event.key == " ") {
+      		if (row.type == "key") {binding = row.action; bindmsg = "";}
+      		else if (row.type == "reset") {keys = {...defaultKeys}; handling = {...defaultHandling}; savectl();}
+      		else if (row.type == "back") screen = "menu";
+      	}
+      }
       const font = new FontFace("Kanchenjunga", "url(https://fonts.gstatic.com/s/kanchenjunga/v2/RWmPoKKd5fUmrILiWsjCI6TSroEH.woff2)");
       document.fonts.add(font);
       let loop = requestAnimationFrame(render);
@@ -994,11 +1191,14 @@
       		} else if (row.type == "pieces" && names.includes(event.key.toUpperCase())) {
       			bagc = names.indexOf(event.key.toUpperCase());
       			bagt(bagc);
+      		} else if (row.type == "controls" && (event.key == "Enter" || event.key == " ")) {
+      			screen = "controls"; csel = 0; binding = null; bindmsg = "";
       		} else if (event.key == "Enter" || event.key == " ") {
       			start();
       		}
       		return;
       	}
+      	if (screen == "controls") {ctlkey(event); return;}
       	if (event.key == "r" || event.key == "R") {
       		start();
       		return;
@@ -1016,54 +1216,32 @@
       		return;
       	}
       	if (p.ai || p.dead || ai.dead) return;
-      	if (event.key == "ArrowUp") {
-      		rotatep(p, "cw");
-      	} else if (event.key == "z") {
-      		rotatep(p, "ccw");
-      	} else if (event.key == "a") {
-      		rotatep(p, "180");
-      	} else if (event.key == "x" || event.key == "X") {
-      		morph(p);
-      	} else if (event.key == "c" && p.hold) {
-      		swap(p);
-      	} else if (event.key == "ArrowLeft") {
-      		move(p, -1, 0);
-      	} else if (event.key == "ArrowRight") {
-      		move(p, 1, 0);
-      	} else if (event.key == "ArrowDown") {
-      		if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
-      	} else if (event.key == " ") {
-      		drop(p);
-      	}
-      	time = setTimeout(() => {if (!int) int = setInterval(arr, 16)}, event.key == "ArrowDown" ? 16 : 120);
+      	const act = actionof(event.key);
+      	const now = performance.now();
+      	if (act == "left") dirpress(-1, now);
+      	else if (act == "right") dirpress(1, now);
+      	else if (act == "soft") softpress();
+      	else if (act == "hard") drop(p);
+      	else if (act == "cw") rotatep(p, "cw");
+      	else if (act == "ccw") rotatep(p, "ccw");
+      	else if (act == "flip") rotatep(p, "180");
+      	else if (act == "morph") morph(p);
+      	else if (act == "hold" && p.hold) swap(p);
       };
       window.onkeyup = (event) => {
       	delete pres[event.key];
-      	clearTimeout(time);
-      }
+      	const act = actionof(event.key);
+      	const now = performance.now();
+      	if (act == "left") drelease(-1, now);
+      	else if (act == "right") drelease(1, now);
+      	else if (act == "soft") inp.soft = false;
+      };
       function release() { // clear stuck keys when focus is lost
       	pres = {};
-      	clearTimeout(time);
-      	clearInterval(int);
-      	int = 0;
+      	inp = newinp();
       }
       window.addEventListener("blur", release);
       document.addEventListener("visibilitychange", () => {if (document.hidden) release();});
-      function arr() {
-      	if (screen == "play" && !p.ai && !p.dead && !ai.dead) {
-      		if (pres["ArrowLeft"]) {
-      			move(p, -1, 0);
-      		} else if (pres["ArrowRight"]) {
-      			move(p, 1, 0);
-      		} else if (pres["ArrowDown"]) {
-      			if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
-      		}
-      	}
-      	if (!["ArrowLeft", "ArrowRight", "ArrowDown"].some(k => pres[k])) {
-      		clearInterval(int);
-      		int = 0;
-      	}
-      }
     </script>
   </body>
 </html>
