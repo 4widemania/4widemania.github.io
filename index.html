@@ -1041,6 +1041,14 @@
       	delete pres[event.key];
       	clearTimeout(time);
       }
+      function release() { // clear stuck keys when focus is lost
+      	pres = {};
+      	clearTimeout(time);
+      	clearInterval(int);
+      	int = 0;
+      }
+      window.addEventListener("blur", release);
+      document.addEventListener("visibilitychange", () => {if (document.hidden) release();});
       function arr() {
       	if (screen == "play" && !p.ai && !p.dead && !ai.dead) {
       		if (pres["ArrowLeft"]) {
@@ -1051,7 +1059,7 @@
       			if (!collision(p, p.curr.matrix, p.curr.x, p.curr.y + 1)) move(p, 0, 1);
       		}
       	}
-      	if (Object.keys(pres).length == 0) {
+      	if (!["ArrowLeft", "ArrowRight", "ArrowDown"].some(k => pres[k])) {
       		clearInterval(int);
       		int = 0;
       	}
