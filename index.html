@@ -457,12 +457,62 @@
       	}
       	return out;
       }
+      function wellcol(rows) { // I-piece well: lowest column, ties toward the edges
+      	let best = 0;
+      	let bk = Infinity;
+      	for (let x = 0; x < bw; x++) {
+      		let h = 0;
+      		for (let y = 0; y < bh; y++) if (rows[y] >> x & 1) {h = bh - y; break;}
+      		const k = h * 10 + Math.min(x, bw - 1 - x);
+      		if (k < bk) {bk = k; best = x;}
+      	}
+      	return best;
+      }
       function evaluate(rows) { // score the scenario
+      	if (bw == 4) return evaluate4(rows);
+      	const well = wellcol(rows);
       	let holes = 0;
       	let total = 0;
       	let bump = 0;
       	let peak = 0;
-      	let last = 0;
+      	let last = null;
+      	let wellh = 0;
+      	let spinsetup = 0;
+      	for (let x = 0; x < bw; x++) {
+      		let h = 0;
+      		for (let y = 0; y < bh; y++) {
+      			if (rows[y] >> x & 1) {
+      				if (!h) h = bh - y;
+      			} else if (h) holes += 1;
+      		}
+      		if (x == well) {wellh = h; continue;} // the well is not part of the stack
+      		total += h;
+      		peak = Math.max(peak, h);
+      		if (last != null) bump += Math.abs(h - last);
+      		last = h;
+      	}
+      	const stackavg = total / Math.max(1, bw - 1);
+      	const wellpen = Math.max(0, wellh - Math.max(0, stackavg - 4)) * 1.5;
+      	let ready = 0; // rows full except for the well cell
+      	const wmask = full & ~(1 << well);
+      	for (let y = 0; y < bh; y++) {
+      		if ((rows[y] & wmask) == wmask && !(rows[y] >> well & 1)) ready += 1;
+      	}
+      	for (let y = 1; y < bh; y++) { // spin setups: pockets with an overhang
+      		for (let x = 0; x < bw; x++) {
+      			if (x == well || (rows[y] >> x & 1)) continue;
+      			const l = x == 0 || (rows[y] >> (x - 1) & 1);
+      			const r = x == bw - 1 || (rows[y] >> (x + 1) & 1);
+      			const up = rows[y - 1] >> x & 1;
+      			const dn = y == bh - 1 || (rows[y + 1] >> x & 1);
+      			if (dn && (l ? 1 : 0) + (r ? 1 : 0) + (up ? 1 : 0) == (setup.spinall ? 2 : 3)) spinsetup += 1;
+      		}
+      	}
+      	return holes * -7 - total * 0.2 - bump * 0.7 - Math.max(0, peak - bh / 2) * 4 - wellpen + Math.min(ready, 4) * 1.2 + Math.min(spinsetup, 3) * (setup.spinall ? 1.5 : 1);
+      }
+      function evaluate4(rows) { // 4-wide: flat, holeless stack that keeps the combo fed
+      	let holes = 0;
+      	let total = 0;
       	for (let x = 0; x < bw; x++) {
       		let h = 0;
       		for (let y = 0; y < bh; y++) {
@@ -471,70 +521,24 @@
       			} else if (h) holes += 1;
       		}
       		total += h;
-      		peak = Math.max(peak, h);
-      		if (x > 0) bump += Math.abs(h - last);
-      		last = h;
       	}
-      	return holes * -7 - total * 0.2 - bump * 0.7 - Math.max(0, peak - bh / 2) * 4;
-      }
-      function reach(g, name, x, y, rot) {
-      	const out = [];
-      	if (collision(g, shapes[name][rot], x, y)) return out;
-      	const seen = new Set();
-      	const done = new Set();
-      	const id = (x, y, rot, flag, name) => ((((rot * (bw + 8) + x + 4) * (bh + 8) + y + 4) * 2 + flag) * 2) + (name == "UL" ? 1 : 0);
-      	const queue = [{x, y, rot, flag: 0, name, path: []}];
-      	seen.add(id(x, y, rot, 0, name));
-      	for (let q = 0; q < queue.length; q++) {
-      		const s = queue[q];
-      		const shape = shapes[s.name][s.rot];
-      		let y = s.y;
-      		while (!collision(g, shape, s.x, y + 1)) y += 1;
-      		const spin = (y == s.y ? s.flag : 0) && (setup.spinall ? touching(g, shape, s.x, y) : immobile(g, shape, s.x, y));
-      		const abs = cells[s.name][s.rot].map(([cx, cy]) => [s.x + cx, y + cy]);
-      		if (abs.every(([, by]) => by >= 0)) {
-      			const key = abs.map(([bx, by]) => by * bw + bx).sort((a, b) => a - b).join() + (spin ? "s" : "");
-      			if (!done.has(key)) {
-      				done.add(key);
-      				out.push({cells: abs, spin: !!spin, path: s.path});
-      			}
-      		}
-      		const next = [];
-      		for (const [input, dx] of [["left", -1], ["right", 1]]) {
-      			if (!collision(g, shape, s.x + dx, s.y)) next.push([input, s.x + dx, s.y, s.rot, 0, s.name]);
-      		}
-      		if (!collision(g, shape, s.x, s.y + 1)) next.push(["down", s.x, s.y + 1, s.rot, 0, s.name]);
-      		for (const [input, turn] of [["cw", 1], ["ccw", 3], ["180", 2]]) {
-      			const rot = (s.rot + turn) % 4;
-      			for (const [dx, dy] of kicks[input]) {
-      				if (!collision(g, shapes[s.name][rot], s.x + dx, s.y + dy)) {
-      					next.push([input, s.x + dx, s.y + dy, rot, 1, s.name]);
-      					break;
-      				}
-      			}
-      		}
-      		if (twin[s.name]) { // X to toggle U and UL
-      			for (const [dx, dy] of kicks.cw) {
-      				if (!collision(g, shapes[twin[s.name]][s.rot], s.x + dx, s.y + dy)) {
-      					next.push(["x", s.x + dx, s.y + dy, s.rot, 1, twin[s.name]]);
-      					break;
-      				}
-      			}
-      		}
-      		for (const [input, nx, ny, rot, flag, nm] of next) {
-      			const k = id(nx, ny, rot, flag, nm);
-      			if (seen.has(k)) continue;
-      			seen.add(k);
-      			queue.push({x: nx, y: ny, rot: rot, flag: flag, name: nm, path: [...s.path, input]});
-      		}
+      	let feed = 0;
+      	for (let y = 0; y < bh; y++) {
+      		const c = (rows[y] & 1) + (rows[y] >> 1 & 1) + (rows[y] >> 2 & 1) + (rows[y] >> 3 & 1);
+      		if (c == 3) feed += 1;
       	}
-      	return out;
+      	return holes * -7 - total * 0.15 + Math.min(feed, 6) * 0.8;
       }
       function child(node, done, spin, held, i, first) {
       	const combo = done.lines > 0 ? node.combo + 1 : 0;
       	const atk = done.lines > 0 ? power(done.lines, combo, spin) : 0;
-      	const total = node.total + atk * 3 + done.lines * 2;
-      	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, value: total + evaluate(done.rows)};
+      	let total = node.total + atk * 3 + done.lines * 2;
+      	let broke = node.broke || false;
+      	if (bw == 4) { // lookahead is spent on keeping the combo alive as long as possible
+      		if (node.combo > 0 && done.lines == 0 && !broke) {broke = true; total -= 40 + node.combo * 4;}
+      		if (done.lines > 0) total += 25 + combo * 2;
+      	} else if (spin && done.lines > 0) total += setup.spinall ? 6 : 4;
+      	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, broke: broke, value: total + evaluate(done.rows)};
       }
       function think(g) { // decide which move is best
       	const look = levels[g.cfg.level].look;
@@ -580,7 +584,24 @@
       		g.born = time;
       		const n = g.plan.length - 1;
       		const r = g.plan.filter((a, i) => i > 0 && a == g.plan[i - 1] && (a == "left" || a == "right" || a == "down")).length;
-      		g.step = Math.min(100, Math.max(20, (period * 0.6 - 30 * r) / Math.max(n - r, 1)));
+      		const budget = period * 0.6;
+      		const need = 20 * Math.max(n - r, 1) + 30 * r;
+      		if (need > budget) { // too slow to match pps: collapse repeated downs into one instant softdrop
+      			const out = [];
+      			let sd = false;
+      			for (const a of g.plan) {
+      				if (a == "down") {
+      					if (!sd) out.push("sdrop");
+      					sd = true;
+      				} else {out.push(a); sd = false;}
+      			}
+      			g.plan = out;
+      			const n2 = g.plan.length - 1;
+      			const r2 = g.plan.filter((a, i) => i > 0 && a == g.plan[i - 1] && (a == "left" || a == "right")).length;
+      			g.step = Math.min(100, Math.max(5, (budget - 30 * r2) / Math.max(n2 - r2, 1)));
+      		} else {
+      			g.step = Math.min(100, Math.max(20, (budget - 30 * r) / Math.max(n - r, 1)));
+      		}
       		g.next = time + Math.min(150, period * 0.15);
       	}
       	if (time < g.next) return;
@@ -593,7 +614,7 @@
       		return;
       	}
       	const again = g.plan[0] == input && (input == "left" || input == "right" || input == "down");
-      	g.next = time + (again ? 30 : g.step) * (0.85 + Math.random() * 0.3);
+      	g.next = time + (again ? Math.min(30, g.step) : g.step) * (0.85 + Math.random() * 0.3);
       }
       function tick(g, time) { // gravity
       	if (time - g.last > 1000 / gravity) {
@@ -1001,6 +1022,7 @@
       	"180": g => rotatep(g, "180"),
       	drop: g => drop(g),
       	x: g => morph(g),
+      	sdrop: g => {while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) move(g, 0, 1);},
       };
       const setup = {versus: true, w: bw, h: bh, spinall: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: [{level: 0, pps: levels[0].pps}, {level: 0, pps: levels[0].pps}]};
       let screen = "menu";
