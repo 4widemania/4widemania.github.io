@@ -150,6 +150,9 @@
       	}
       	return false;
       }
+      function stuck(g) { // no possible placements
+      	return reach(g, g.curr.name, g.curr.x, g.curr.y, g.curr.rot).length == 0;
+      }
       function collision(g, piece, x, y) { // collision check
       	for (let row = 0; row < piece.length; row++) {
       		for (let col = 0; col < piece[row].length; col++) {
@@ -239,7 +242,7 @@
       	const next = g.bag.shift();
       	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: spawny, rot: 0};
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
-      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g)) g.dead = true; // top out
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g) || stuck(g)) g.dead = true; // top out
       }
       function lock(g) { // lock piece
       	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
@@ -268,9 +271,50 @@
       	reset(g.held);
       	g.hold = false;
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
-      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g)) g.dead = true; // top out
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g) || stuck(g)) g.dead = true; // top out
       }
-      function place(g) { // place down piece
+      function options(g) { // every placement reachable with the current or hold piece
+	const roots = [{name: g.curr.name, x: g.curr.x, y: g.curr.y, rot: g.curr.rot, next: g.bag[0]}];
+	if (g.hold) {
+		if (g.held.name) roots.push({name: g.held.name, x: spawnx, y: spawny, rot: 0, next: g.bag[0]});
+		else roots.push({name: g.bag[0], x: spawnx, y: spawny, rot: 0, next: g.bag[1]});
+	}
+	const out = [];
+	for (const r of roots) for (const c of reach(g, r.name, r.x, r.y, r.rot)) out.push({cells: c.cells, next: r.next});
+	return out;
+}
+function spawnhit(rows, name) { // would a piece spawning on these rows top out
+	if (!name) return false;
+	const m = pieces[name];
+	for (let row = 0; row < m.length; row++) {
+		for (let col = 0; col < m[row].length; col++) {
+			if (!m[row][col]) continue;
+			for (const [dx, dy] of [[0, 0], [-1, 0], [1, 0], [0, -1], [0, 1]]) {
+				const bx = spawnx + col + dx;
+				const by = spawny + row + dy;
+				if (bx >= 0 && bx < bw && by >= 0 && by < bh && (rows[by] >> bx & 1)) return true;
+			}
+		}
+	}
+	return false;
+}
+function lost(g) { // can't continue the combo and garbage tops you out wherever you place
+	const opts = options(g);
+	if (opts.length == 0) return false;
+	const rows = g.board.map(r => r.reduce((m, c, x) => c ? m | 1 << x : m, 0));
+	const res = opts.map(o => ({...stick(rows, o.cells), next: o.next}));
+	if (res.some(r => r.lines > 0)) return false;
+	const add = [];
+	for (const chunk of g.pending) {
+		for (let i = 0; i < chunk.n && add.length < cap; i++) add.push(full & ~(1 << chunk.hole));
+	}
+	if (add.length == 0) return false;
+	return res.every(r => {
+		for (let i = 0; i < add.length; i++) if (r.rows[i]) return true;
+		return spawnhit(r.rows.slice(add.length).concat(add), r.next);
+	});
+}
+function place(g) { // place down piece
       	if (Date.now() < g.grace) return;
       	const spin = g.rotated && (setup.spinall ? touching(g) : immobile(g));
       	for (let row = 0; row < g.curr.matrix.length; row++) {
@@ -296,6 +340,7 @@
       	if (lines == 0) garbage(g);
       	bounce(g, lines);
       	spawn(g);
+      	if (!g.dead && lost(g)) g.dead = true;
       }
       function move(g, dx, dy, kick=false) { // move piece
       	if (collision(g, g.curr.matrix, g.curr.x + dx, g.curr.y + dy) && !kick) {
