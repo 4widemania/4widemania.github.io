@@ -62,7 +62,9 @@
       	load("A24linesSpin", "4_24LINES_SPIN.mp3"),
       	load("Aplace", "4_place.wav"),
       	load("Acombo", "4_combo.wav"),
-      	load("Aclear", "4_clear.mp3")
+      	load("Aclear", "4_clear.mp3"),
+      	load("Awin", "4_win.mp3"),
+      	load("Alose", "4_lose.mp3")
       ])})();
       function aic(bot) { // create game
       	return {
@@ -105,6 +107,7 @@
       	bh = setup.h;
       	full = (1 << bw) - 1;
       	spawnx = Math.floor(bw / 2) - 2;
+      	over = 0;
       	p = aic(!setup.versus);
       	ai = aic(true);
       	p.foe = ai;
@@ -234,9 +237,9 @@
       	bagf(g.bag);
       	g.rotated = false;
       	const next = g.bag.shift();
-      	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: 0, rot: 0};
+      	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: spawny, rot: 0};
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
-      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y)) g.dead = true;
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g)) g.dead = true; // top out
       }
       function lock(g) { // lock piece
       	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
@@ -250,7 +253,7 @@
       	piece.matrix = pieces[piece.name];
       	piece.source = pieces[piece.name].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20})));
       	piece.x = spawnx;
-      	piece.y = 0;
+      	piece.y = spawny;
       	piece.rot = 0;
       }
       function swap(g) { // swap with hold piece
@@ -265,7 +268,7 @@
       	reset(g.held);
       	g.hold = false;
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
-      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y)) g.dead = true;
+      	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g)) g.dead = true; // top out
       }
       function place(g) { // place down piece
       	if (Date.now() < g.grace) return;
@@ -600,8 +603,8 @@
       	const held = g.held.name || null;
       	const roots = [{hold: false, name: g.curr.name, x: g.curr.x, y: g.curr.y, rot: g.curr.rot, i: 1, held: held}];
       	if (g.hold) {
-      		if (held) roots.push({hold: true, name: held, x: spawnx, y: 0, rot: 0, i: 1, held: g.curr.name});
-      		else if (seq[1]) roots.push({hold: true, name: seq[1], x: spawnx, y: 0, rot: 0, i: 2, held: g.curr.name});
+      		if (held) roots.push({hold: true, name: held, x: spawnx, y: spawny, rot: 0, i: 1, held: g.curr.name});
+      		else if (seq[1]) roots.push({hold: true, name: seq[1], x: spawnx, y: spawny, rot: 0, i: 2, held: g.curr.name});
       	}
       	let beam = [];
       	for (const root of roots) {
@@ -829,6 +832,28 @@
       	const off = fxoffset(g, now);
       	ctx.save();
       	ctx.translate(off.x, off.y); // bounce and shake everything
+      	const fell = over && g.dead ? (now - over) / 1000 : -1; // seconds since this board topped out
+      	if (fell >= 0) { // loser's board falls out of existence
+      		const cx = g.left + brw / 2;
+      		const cy = g.top + brh / 2;
+      		ctx.translate(0, g.size * 45 * fell * fell);
+      		ctx.translate(cx, cy);
+      		ctx.rotate((g.tilt || 1) * Math.min(fell, 1.5) * 0.3);
+      		ctx.translate(-cx, -cy);
+      	}
+      	if (fell < 2) {
+      	if (over && !g.dead && g.foe.dead) { // winner's board glows yellow
+      		const k = Math.min(1, (now - over) / 500);
+      		ctx.save();
+      		ctx.shadowColor = "rgba(255, 221, 51, 0.8)";
+      		ctx.shadowBlur = g.size * 0.9 * k * (0.85 + 0.15 * Math.sin(now * 0.004));
+      		ctx.fillStyle = "#03000f";
+      		ctx.fillRect(g.left, g.top, brw, brh);
+      		ctx.restore();
+      		ctx.strokeStyle = `rgba(255, 221, 51, ${0.45 * k})`;
+      		ctx.lineWidth = 2;
+      		ctx.strokeRect(g.left - 1, g.top - 1, brw + 2, brh + 2);
+      	}
       	ctx.fillStyle = "#03000f";
       	ctx.fillRect(g.left, g.top, brw, brh);
       	gridlines(g);
@@ -846,6 +871,7 @@
       	ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
       	ctx.fillRect(g.left - 8, g.top + brh - incoming * g.size, 6, incoming * g.size);
       	drawfx(g);
+      	}
       	ctx.restore();
       	ctx.globalAlpha = 1;
       	const qs = Math.min(g.size * 0.7, brh / 20);
@@ -956,7 +982,13 @@
       		else {inputstep(performance.now()); tick(p, time);}
       		if (!p.dead) cpu(ai, time);
       	}
-      	const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / bh) * 0.95);
+      	if ((p.dead || ai.dead) && !over) { // round just ended
+      		over = performance.now();
+      		p.tilt = Math.random() < 0.5 ? -1 : 1;
+      		ai.tilt = Math.random() < 0.5 ? -1 : 1;
+      		sound(p.dead && (ai.dead || setup.versus) ? "Alose" : "Awin");
+      	}
+      	const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / (bh + 3)) * 0.95);
       	const brw = bw * size;
       	const brh = bh * size;
       	canvas.width = cw;
@@ -990,7 +1022,11 @@
       	hints.forEach((h, i) => ctx.fillText(h, mid, ch - brh + 80 + bots.length * 60 + 20 + i * 25));
       	if (p.dead || ai.dead) {
       		ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-      		ctx.fillRect(0, 0, cw, ch);
+      		ctx.beginPath();
+      		ctx.rect(0, 0, cw, ch);
+      		const win = p.dead && !ai.dead ? ai : ai.dead && !p.dead ? p : null;
+      		if (win) ctx.rect(win.left - size * 1.5, win.top - size * 3, brw + size * 3, brh + size * 4.5); // keep the winner's glow undimmed
+      		ctx.fill("evenodd");
       		ctx.fillStyle = "#bdb7ff";
       		ctx.font = "bold 64px Kanchenjunga";
       		const msg = p.dead && ai.dead ? "DRAW" : setup.versus ? (ai.dead ? "YOU WIN" : "YOU LOSE") : (ai.dead ? "LEFT CPU WINS" : "RIGHT CPU WINS");
@@ -1040,6 +1076,8 @@
       let full = (1 << bw) - 1;
       let spawnx = Math.floor(bw / 2) - 2;
       const cap = 8;
+      const spawny = -2; // pieces spawn 2 rows above the playfield
+      let over = 0; // time the round ended, 0 while playing
       const width = 10;
       const fxcfg = {
       	bounceBase: 0.12, // board bounciness
