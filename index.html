@@ -22,7 +22,7 @@
       const ctx2 = new (window.AudioContext || window.webkitAudioContext)();
       const sounds = {};
       async function load(name, file) { // load sound
-      	const response = await fetch(`https://scratchy2.github.io/prototypestudios/assets/${file}`);
+      	const response = await fetch(`https://scratchy2.github.io/prototypestudios/assets/${file}?t=${Date.now()}`);
       	if (!response.ok) throw new Error(`failed to load ${name}: ${response.status}`);
       	const data = await response.arrayBuffer();
       	sounds[name] = await ctx2.decodeAudioData(data);
