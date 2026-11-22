@@ -76,6 +76,7 @@
       		lockat: 0,
       		resets: 15,
       		combo: 0,
+      		pcsave: false,
       		surge: 0,
       		sent: 0,
       		grace: 0,
@@ -202,6 +203,10 @@
       		}
       	}
       	if (c == 0) {
+      		if (g.pcsave) { // perfect clear keeps combo for one placement
+      			g.pcsave = false;
+      			return 0;
+      		}
       		g.combo = 0;
       		g.surge = 0;
       		return 0;
@@ -211,6 +216,7 @@
       	g.combo += 1;
       	c = power(lines, g.combo, spin);
       	const perfect = g.board.every(r => r.every(cell => cell == null));
+      	g.pcsave = perfect;
       	if (perfect) c *= 2;
       	g.surge += c;
       	g.sent += c;
