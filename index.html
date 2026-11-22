@@ -60,12 +60,14 @@
       	load("A8linesSpin", "4_8LINES_SPIN.mp3"),
       	load("A15linesSpin", "4_15LINES_SPIN.mp3"),
       	load("A24linesSpin", "4_24LINES_SPIN.mp3"),
-      	load("Aplace", "4_place.wav")
+      	load("Aplace", "4_place.wav"),
+      	load("Acombo", "4_combo.wav"),
+      	load("Aclear", "4_clear.mp3")
       ])})();
       function aic(bot) { // create game
       	return {
       		ai: bot,
-      		vol: bot ? 0.35 : 1,
+      		vol: bot ? 0.5 : 1,
       		board: Array.from({length: bh}, () => Array(bw).fill(null)),
       		curr: {},
       		held: {},
@@ -93,7 +95,8 @@
       		by: 0,
       		shake: 0,
       		fx: [],
-      		fxt: 0
+      		fxt: 0,
+      		pop: null
       	};
       }
       function start() { // start game
@@ -207,18 +210,18 @@
       	burst(g, gone, lines);
       	g.combo += 1;
       	c = power(lines, g.combo, spin);
+      	const perfect = g.board.every(r => r.every(cell => cell == null));
+      	if (perfect) c *= 2;
       	g.surge += c;
       	g.sent += c;
-      	let name;
-      	if (c < 2) name = "A1lines";
-      	else if (c < 4) name = "A2lines";
-      	else if (c < 8) name = "A4lines";
-      	else if (c < 15) name = "A8lines";
-      	else if (c < 24) name = "A15lines";
-      	else name = "A24lines";
-      	sound(`${name}${spin ? "Spin" : ""}`, 1, ctx2.currentTime, g.vol);
+      	const pitch = 2 ** (Math.min(g.combo - 2, 24) / 24); // +0.5 semitones per combo, capped at +12
+      	if (g.combo > 1) sound("Acombo", pitch, ctx2.currentTime, g.vol);
       	const left = cancel(g, c);
       	if (left > 0) g.foe.pending.push({n: left, hole: Math.floor(Math.random() * bw)});
+      	const sfx = c == 1 ? "A1lines" : c < 4 ? "A2lines" : c < 8 ? "A4lines" : c < 15 ? "A8lines" : c < 24 ? "A15lines" : "A24lines";
+      	sound(sfx + (spin ? "Spin" : ""), 1, ctx2.currentTime, g.vol);
+      	if (perfect) sound("Aclear", 1, ctx2.currentTime, g.vol);
+      	if (c > 0) g.pop = {n: c, perfect: perfect, born: performance.now(), ox: -100 + Math.random() * 60, oy: 0.3 + Math.random() * 0.45, rot: (Math.random() - 0.5) * 0.4, hue: Math.floor(Math.random() * 360)};
       	return lines;
       }
       function spawn(g) { // spawn next piece
@@ -700,6 +703,43 @@
       	}
       	ctx.stroke();
       }
+      function drawpop(g, brh) { // flashy lines sent text beside the board
+      	const q = g.pop;
+      	if (!q) return;
+      	const t = performance.now() - q.born;
+      	const life = 1000;
+      	if (t > life) {g.pop = null; return;}
+      	const grow = t < 180 ? 1 + 0.9 * (1 - t / 180) ** 2 - 0.9 * (1 - t / 180) * 0.5 : 1; // pop-in
+      	const fade = 1 - t / life;
+      	const fs = Math.min(64, 26 + q.n * 2.5) * Math.min(1.4, g.size / 24 + 0.4);
+      	const x = g.left + q.ox;
+      	const y = g.top + brh * q.oy;
+      	ctx.save();
+      	ctx.globalAlpha = Math.max(0, fade);
+      	ctx.translate(x, y);
+      	ctx.rotate(q.rot);
+      	ctx.scale(grow, grow);
+      	ctx.textAlign = "center";
+      	const hue = (q.hue + t * 0.6) % 360;
+      	ctx.shadowColor = `hsl(${hue}, 100%, 60%)`;
+      	ctx.shadowBlur = 18;
+      	ctx.font = `bold ${fs}px Kanchenjunga`;
+      	ctx.lineWidth = 5;
+      	ctx.strokeStyle = "#1a0050";
+      	ctx.strokeText(`+${q.n}`, 0, 0);
+      	ctx.fillStyle = `hsl(${hue}, 100%, ${Math.floor(t / 70) % 2 ? 85 : 65}%)`;
+      	ctx.fillText(`+${q.n}`, 0, 0);
+      	if (q.perfect) {
+      		ctx.font = `bold ${Math.max(12, fs * 0.38)}px Kanchenjunga`;
+      		ctx.strokeText("PERFECT CLEAR", 0, fs * 0.5);
+      		ctx.fillStyle = "#ffffff";
+      		ctx.fillText("PERFECT CLEAR", 0, fs * 0.5);
+      	}
+      	ctx.restore();
+      	ctx.shadowBlur = 0;
+      	ctx.shadowColor = "transparent";
+      	ctx.textAlign = "start";
+      }
       function draw(g) { // draw everything
       	const now = performance.now();
       	fxstep(g, now);
@@ -741,6 +781,7 @@
       		ctx.shadowColor = "transparent";
       		if (i < 4) for (let x = 0; x < 4; x++) drawc(g, trash, x, top - 1, ql, g.top, qs);
       	}
+      	drawpop(g, brh);
       	arrow(ql + 2 * qs, g.top + 14.3 * qs, qs * 1.2, "#33ff33");
       	const hy = g.top + 15.8 * qs;
       	if (g.held.name) {
