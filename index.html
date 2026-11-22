@@ -529,6 +529,59 @@
       	}
       	return holes * -7 - total * 0.15 + Math.min(feed, 6) * 0.8;
       }
+      function reach(g, name, x, y, rot) {
+      	const out = [];
+      	if (collision(g, shapes[name][rot], x, y)) return out;
+      	const seen = new Set();
+      	const done = new Set();
+      	const id = (x, y, rot, flag, name) => ((((rot * (bw + 8) + x + 4) * (bh + 8) + y + 4) * 2 + flag) * 2) + (name == "UL" ? 1 : 0);
+      	const queue = [{x, y, rot, flag: 0, name, path: []}];
+      	seen.add(id(x, y, rot, 0, name));
+      	for (let q = 0; q < queue.length; q++) {
+      		const s = queue[q];
+      		const shape = shapes[s.name][s.rot];
+      		let y = s.y;
+      		while (!collision(g, shape, s.x, y + 1)) y += 1;
+      		const spin = (y == s.y ? s.flag : 0) && (setup.spinall ? touching(g, shape, s.x, y) : immobile(g, shape, s.x, y));
+      		const abs = cells[s.name][s.rot].map(([cx, cy]) => [s.x + cx, y + cy]);
+      		if (abs.every(([, by]) => by >= 0)) {
+      			const key = abs.map(([bx, by]) => by * bw + bx).sort((a, b) => a - b).join() + (spin ? "s" : "");
+      			if (!done.has(key)) {
+      				done.add(key);
+      				out.push({cells: abs, spin: !!spin, path: s.path});
+      			}
+      		}
+      		const next = [];
+      		for (const [input, dx] of [["left", -1], ["right", 1]]) {
+      			if (!collision(g, shape, s.x + dx, s.y)) next.push([input, s.x + dx, s.y, s.rot, 0, s.name]);
+      		}
+      		if (!collision(g, shape, s.x, s.y + 1)) next.push(["down", s.x, s.y + 1, s.rot, 0, s.name]);
+      		for (const [input, turn] of [["cw", 1], ["ccw", 3], ["180", 2]]) {
+      			const rot = (s.rot + turn) % 4;
+      			for (const [dx, dy] of kicks[input]) {
+      				if (!collision(g, shapes[s.name][rot], s.x + dx, s.y + dy)) {
+      					next.push([input, s.x + dx, s.y + dy, rot, 1, s.name]);
+      					break;
+      				}
+      			}
+      		}
+      		if (twin[s.name]) { // X to toggle U and UL
+      			for (const [dx, dy] of kicks.cw) {
+      				if (!collision(g, shapes[twin[s.name]][s.rot], s.x + dx, s.y + dy)) {
+      					next.push(["x", s.x + dx, s.y + dy, s.rot, 1, twin[s.name]]);
+      					break;
+      				}
+      			}
+      		}
+      		for (const [input, nx, ny, rot, flag, nm] of next) {
+      			const k = id(nx, ny, rot, flag, nm);
+      			if (seen.has(k)) continue;
+      			seen.add(k);
+      			queue.push({x: nx, y: ny, rot: rot, flag: flag, name: nm, path: [...s.path, input]});
+      		}
+      	}
+      	return out;
+      }
       function child(node, done, spin, held, i, first) {
       	const combo = done.lines > 0 ? node.combo + 1 : 0;
       	const atk = done.lines > 0 ? power(done.lines, combo, spin) : 0;
