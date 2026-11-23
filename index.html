@@ -9,6 +9,21 @@
         margin: 0;
         padding: 0;
       }
+      #ratingbox {
+        position: fixed;
+        left: 12px;
+        top: 8px;
+        z-index: 5;
+        pointer-events: none;
+        color: #bdb7ff;
+        font: bold 22px Kanchenjunga, sans-serif;
+        text-shadow: 0 0 6px #120038;
+        white-space: nowrap;
+      }
+      #ratingbox .rk {
+        color: #ffffff;
+        margin-right: 8px;
+      }
       canvas {
         width: 100%;
         height: 100%;
@@ -17,6 +32,7 @@
   </head>
   <body>
     <canvas id="game"></canvas>
+    <div id="ratingbox"></div>
     <script>
       const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
       const ctx2 = new (window.AudioContext || window.webkitAudioContext)();
@@ -64,7 +80,8 @@
       	load("Acombo", "4_combo.wav"),
       	load("Aclear", "4_clear.mp3"),
       	load("Awin", "4_win.mp3"),
-      	load("Alose", "4_lose.mp3")
+      	load("Alose", "4_lose.mp3"),
+      	load("Adie", "4_die.mp3")
       ])})();
       function aic(bot) { // create game
       	return {
@@ -99,27 +116,137 @@
       		shake: 0,
       		fx: [],
       		fxt: 0,
-      		pop: null
+      		pop: null,
+		name: "",
+		ent: null,
+		diedAt: 0,
+		place: 0,
+		tilt: 1,
+		u: 1,
+		labelY: 0,
+		startT: 0,
+		rate: 0
       	};
       }
-      function start() { // start game
-      	bw = setup.w;
-      	bh = setup.h;
-      	full = (1 << bw) - 1;
-      	spawnx = Math.floor(bw / 2) - 2;
-      	over = 0;
-      	p = aic(!setup.versus);
-      	ai = aic(true);
-      	p.foe = ai;
-      	ai.foe = p;
-      	p.cfg = setup.cpus[0];
-      	ai.cfg = setup.cpus[1];
-      	tuned = ai;
-      	screen = "play";
-      	inp = newinp();
-      	spawn(p);
-      	spawn(ai);
-      }
+      function setgames(defs) { // create the boards for a round
+	const nc = defs.filter(d => d.cfg).length;
+	gs = defs.map(d => {
+		const g = aic(!!d.cfg);
+		g.cfg = d.cfg || null;
+		g.name = d.name;
+		g.ent = d.ent || null;
+		if (d.cfg) g.vol = 0.5 / Math.sqrt(Math.max(1, nc - 1));
+		return g;
+	});
+	p = gs.find(g => !g.ai) || gs[0];
+	tuned = gs.find(g => g.ai) || gs[0];
+	view = p.ai ? null : p; // the board shown large
+	unrated = false;
+	const t0 = performance.now();
+	for (const g of gs) {g.startT = t0; g.rate = g.ai ? cpuRating(g.cfg) : 0;}
+	over = 0;
+	inp = newinp();
+	for (const g of gs) spawn(g);
+}
+function start() { // start game
+	bw = setup.w;
+	bh = setup.h;
+	full = (1 << bw) - 1;
+	spawnx = Math.floor(bw / 2) - 2;
+	tour = null;
+	screen = "play";
+	const m = modes[setup.mode];
+	const c = setup.cpus;
+	const n = setup.counts[m.id];
+	const bot = i => ({name: "CPU " + (i + 1), cfg: c[i]});
+	if (m.id == "duel") setgames([{name: "You"}, {name: "CPU", cfg: c[1]}]);
+	else if (m.id == "cvc") setgames([{name: "Left CPU", cfg: c[0]}, {name: "Right CPU", cfg: c[1]}]);
+	else if (m.id == "arena") setgames([{name: "You"}, ...Array.from({length: n}, (_, i) => bot(i))]);
+	else if (m.id == "brawl") setgames(Array.from({length: n}, (_, i) => bot(i)));
+	else tourStart(n);
+}
+function tourStart(n) { // tournament: you plus n cpus, every cpu picked near your rating
+	const cpus = shuffle(Array.from({length: n}, (_, i) => {
+		const lv = ratedLevel();
+		return {name: "CPU " + (i + 1), cfg: {level: lv, pps: levels[lv].pps}};
+	}));
+	const field = [{name: "You", human: true, cfg: null}, ...cpus];
+	tour = {field: field, rounds: Math.ceil(Math.log2(field.length)), round: 0, matches: [], mi: 0, cur: 0, winners: [], byes: [], champ: null, nextAt: 0, last: null};
+	tourRound();
+	tourMatch();
+}
+function simWinner(a, b) { // decide a cpu vs cpu match instantly by strength
+	const pa = 1 / (1 + Math.pow(10, (cpuRating(b.cfg) - cpuRating(a.cfg)) / 400));
+	return Math.random() < pa ? a : b;
+}
+function tourRound() { // pair up the remaining players; an odd one out gets a bye
+	const f = tour.field.slice().sort((a, b) => (b.human ? 1 : 0) - (a.human ? 1 : 0)); // you first, so you never get the bye
+	const youIn = f.some(e => e.human);
+	tour.round += 1;
+	tour.matches = [];
+	tour.winners = [];
+	tour.byes = [];
+	for (let i = 0; i + 1 < f.length; i += 2) {
+		const m = [f[i], f[i + 1]];
+		if (youIn && !m.some(e => e.human)) tour.winners.push(simWinner(m[0], m[1])); // matches you aren't in are settled instantly
+		else tour.matches.push(m);
+	}
+	if (f.length % 2) {tour.winners.push(f[f.length - 1]); tour.byes.push(f[f.length - 1]);}
+	tour.mi = 0;
+}
+function tourMatch() { // start the current match
+	tour.cur = tour.mi;
+	setgames(tour.matches[tour.mi].map(e => ({name: e.name, cfg: e.cfg, ent: e})));
+}
+function tourFinish() { // a match just ended
+	const win = gs.find(g => !g.dead);
+	if (win) {
+		tour.winners.push(win.ent);
+		tour.mi += 1;
+		if (tour.mi >= tour.matches.length && tour.winners.length == 1) tour.champ = win.ent;
+	}
+	tour.last = win ? win.ent : null;
+	tour.nextAt = tour.champ ? Infinity : performance.now() + 2800;
+}
+function tourAdvance() { // go to the next match (a draw is replayed)
+	if (!tour || !over || tour.champ) return;
+	if (tour.mi >= tour.matches.length) {
+		tour.field = tour.winners;
+		tourRound();
+	}
+	tourMatch();
+}
+function tourSkip() { // decide the current match by cpu strength (never one you're playing in)
+	if (!tour || over || gs.some(g => !g.ai)) return;
+	const [a, b] = gs;
+	(simWinner(a, b) == a ? b : a).dead = true;
+}
+function stackh(g) { // height of a board's stack
+	const top = g.board.findIndex(r => r.some(c => c != null));
+	return top < 0 ? 0 : bh - top;
+}
+function send(g, n) { // route garbage to the other boards
+	const fs = gs.filter(o => o !== g && !o.dead);
+	if (fs.length == 0) return;
+	const hole = () => Math.floor(Math.random() * bw);
+	if (setup.target == "high" && fs.length > 1) { // everything to the tallest stack
+		let best = [];
+		let hi = -1;
+		for (const o of fs) {
+			const h = stackh(o);
+			if (h > hi) {hi = h; best = [o];}
+			else if (h == hi) best.push(o);
+		}
+		best[Math.floor(Math.random() * best.length)].pending.push({n: n, hole: hole()});
+		return;
+	}
+	const each = Math.floor(n / fs.length); // spread evenly, leftovers go to random boards
+	const extra = n % fs.length;
+	shuffle(fs.slice()).forEach((o, i) => {
+		const k = each + (i < extra ? 1 : 0);
+		if (k > 0) o.pending.push({n: k, hole: hole()});
+	});
+}
       function setlevel(cfg, i) { // set ai level
       	cfg.level = Math.min(levels.length - 1, Math.max(0, i));
       	cfg.pps = levels[cfg.level].pps;
@@ -128,12 +255,22 @@
       	cfg.pps = Math.min(20, Math.max(0.1, Math.round((cfg.pps + d) * 10) / 10));
       }
       function rows() { // menu rows
-      	const rs = [{type: "mode"}];
-      	if (setup.versus) rs.push({type: "skill", cpu: 1, label: "CPU skill"}, {type: "pps", cpu: 1, label: "CPU speed"});
-      	else rs.push({type: "skill", cpu: 0, label: "Left CPU skill"}, {type: "pps", cpu: 0, label: "Left CPU speed"}, {type: "skill", cpu: 1, label: "Right CPU skill"}, {type: "pps", cpu: 1, label: "Right CPU speed"});
-      	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
-      	return rs;
-      }
+	const m = modes[setup.mode];
+	const rs = [{type: "mode"}];
+	if (m.id == "duel") rs.push({type: "skill", cpu: 1, label: "CPU skill"}, {type: "pps", cpu: 1, label: "CPU speed"});
+	else if (m.id == "cvc") rs.push({type: "skill", cpu: 0, label: "Left CPU skill"}, {type: "pps", cpu: 0, label: "Left CPU speed"}, {type: "skill", cpu: 1, label: "Right CPU skill"}, {type: "pps", cpu: 1, label: "Right CPU speed"});
+	else {
+		rs.push({type: "count"});
+		if (m.id == "tourney") rs.push({type: "note"});
+		else {
+			rs.push({type: "target"});
+			for (let i = 0; i < setup.counts[m.id]; i++) rs.push({type: "cpu", cpu: i});
+			rs.push({type: "randomize"});
+		}
+	}
+	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "boards"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
+	return rs;
+}
       function immobile(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // immobile check
       	return collision(g, matrix, x - 1, y) && collision(g, matrix, x + 1, y) && collision(g, matrix, x, y - 1) && collision(g, matrix, x, y + 1);
       }
@@ -141,7 +278,7 @@
       	if (!rotated) return false;
       	// Every piece uses a three-of-four corner test by default. The optional
       	// loose mode broadens non-T spins to any rotated placement touching the stack.
-      	if (name != "T" && setup.spinall) return touching(g, matrix, x, y);
+      	if (name != "T" && setup.spinall) return immobile(g, matrix, x, y);
       	const last = matrix.length - 1;
       	const corners = [[0, 0], [last, 0], [0, last], [last, last]];
       	let occupied = 0;
@@ -244,7 +381,7 @@
       	const pitch = 2 ** (Math.min(g.combo - 2, 24) / 24); // +0.5 semitones per combo, capped at +12
       	if (g.combo > 1) sound("Acombo", pitch, ctx2.currentTime, g.vol);
       	const left = cancel(g, c);
-      	if (left > 0) g.foe.pending.push({n: left, hole: Math.floor(Math.random() * bw)});
+      	if (left > 0) send(g, left);
       	const sfx = c == 1 ? "A1lines" : c < 4 ? "A2lines" : c < 8 ? "A4lines" : c < 15 ? "A8lines" : c < 24 ? "A15lines" : "A24lines";
       	sound(sfx + (spin ? "Spin" : ""), 1, ctx2.currentTime, g.vol);
       	if (perfect) sound("Aclear", 1, ctx2.currentTime, g.vol);
@@ -696,7 +833,7 @@ function place(g) { // place down piece
       }
       function child(node, done, spin, held, i, first, name, nextName=null) {
       	const combo = done.lines > 0 ? node.combo + 1 : 0;
-      	const atk = done.lines > 0 ? power(done.lines, combo, spin) : 0;
+      	const atk = done.lines > 0 ? power(done.lines, combo, spin && !sty.nospin) : 0; // plain stackers don't count on spin damage
       	let total = node.total + atk * 3 + done.lines * 2;
       	// Survival mode makes clears and actual height reduction increasingly valuable near the top.
       	const beforePressure = node.rows ? stackPressure(node.rows) : 0;
@@ -722,7 +859,8 @@ function place(g) { // place down piece
       		if (done.lines > 0) total += 25 + combo * 2;
       	}
       	// Spin rewards apply at every board width, not only on wider boards.
-      	if (spin) total += (name == "T" ? sty.tB : sty.aB) * (done.lines > 0 ? 1 : 0.28);
+      	if (spin && sty.nospin) total -= 12; // plain stackers pick the same placement without the final rotation
+      	else if (spin) total += (name == "T" ? sty.tB : sty.aB) * (done.lines > 0 ? 1 : 0.28);
       	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, broke: broke, value: total + evaluate(done.rows, nextName)};
       }
       function think(g) { // decide which move is best
@@ -793,7 +931,9 @@ function place(g) { // place down piece
       	if (g.dead || !g.curr.name) return;
       	const period = 1000 / aiPps(g);
       	if (!g.plan) {
-      		g.plan = think(g);
+      		if (thinkFrame == frameId) return; // one think per frame keeps many cpus smooth
+			thinkFrame = frameId;
+			g.plan = think(g);
       		g.born = time;
       		const n = g.plan.length - 1;
       		const r = g.plan.filter((a, i) => i > 0 && a == g.plan[i - 1] && (a == "left" || a == "right" || a == "down")).length;
@@ -952,7 +1092,7 @@ function place(g) { // place down piece
       	const grow = t < 180 ? 1 + 0.9 * (1 - t / 180) ** 2 - 0.9 * (1 - t / 180) * 0.5 : 1; // pop-in
       	const fade = 1 - t / life;
       	const fs = Math.min(64, 26 + q.n * 2.5) * Math.min(1.4, g.size / 24 + 0.4);
-      	const x = g.left + q.ox;
+      	const x = g.left + q.ox * (g.u || 1);
       	const y = g.top + brh * q.oy;
       	ctx.save();
       	ctx.globalAlpha = Math.max(0, fade);
@@ -981,219 +1121,391 @@ function place(g) { // place down piece
       	ctx.textAlign = "start";
       }
       function draw(g) { // draw everything
-      	const now = performance.now();
-      	fxstep(g, now);
-      	const brw = bw * g.size;
-      	const brh = bh * g.size;
-      	ctx.globalAlpha = 1;
-      	const off = fxoffset(g, now);
-      	ctx.save();
-      	ctx.translate(off.x, off.y); // bounce and shake everything
-      	const fell = over && g.dead ? (now - over) / 1000 : -1; // seconds since this board topped out
-      	if (fell >= 0) { // loser's board falls out of existence
-      		const cx = g.left + brw / 2;
-      		const cy = g.top + brh / 2;
-      		ctx.translate(0, g.size * 45 * fell * fell);
-      		ctx.translate(cx, cy);
-      		ctx.rotate((g.tilt || 1) * Math.min(fell, 1.5) * 0.3);
-      		ctx.translate(-cx, -cy);
-      	}
-      	if (fell < 2) {
-      	if (over && !g.dead && g.foe.dead) { // winner's board glows yellow
-      		const k = Math.min(1, (now - over) / 500);
-      		ctx.save();
-      		ctx.shadowColor = "rgba(255, 221, 51, 0.8)";
-      		ctx.shadowBlur = g.size * 0.9 * k * (0.85 + 0.15 * Math.sin(now * 0.004));
-      		ctx.fillStyle = "#03000f";
-      		ctx.fillRect(g.left, g.top, brw, brh);
-      		ctx.restore();
-      		ctx.strokeStyle = `rgba(255, 221, 51, ${0.45 * k})`;
-      		ctx.lineWidth = 2;
-      		ctx.strokeRect(g.left - 1, g.top - 1, brw + 2, brh + 2);
-      	}
-      	ctx.fillStyle = "#03000f";
-      	ctx.fillRect(g.left, g.top, brw, brh);
-      	gridlines(g);
-      	drawb(g);
-      	if (g.curr.name) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y, g.curr.name, g.curr.rot);
-      	if (!g.ai && !g.dead) {
-      		ctx.globalAlpha = 0.54;
-      		let gdy = 0;
-      		while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + gdy)) gdy += 1;
-      		gdy -= 1;
-      		if (gdy > 0) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y + gdy, g.curr.name, g.curr.rot);
-      		ctx.globalAlpha = 1;
-      	}
-      	const incoming = Math.min(g.pending.reduce((a, c) => a + c.n, 0), bh);
-      	ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
-      	ctx.fillRect(g.left - 8, g.top + brh - incoming * g.size, 6, incoming * g.size);
-      	drawfx(g);
-      	}
-      	ctx.restore();
-      	ctx.globalAlpha = 1;
-      	const qs = Math.min(g.size * 0.7, brh / 20);
-      	const ql = g.left + brw + 20;
-      	ctx.fillStyle = "#03000f";
-      	ctx.fillRect(ql, g.top, 4 * qs, 14 * qs);
-      	for (let i = 0; i < 5; i++) {
-      		const name = g.bag[i];
-      		const top = 12 - 3 * i;
-      		if (i == 0) {ctx.shadowColor = "rgba(255, 255, 255, 0.85)"; ctx.shadowBlur = qs * 0.7;} // glow on the next piece
-      		drawm(g, name, name == "I" || name == "O" ? 0 : 0.5, top, ql, g.top, qs);
-      		ctx.shadowBlur = 0;
-      		ctx.shadowColor = "transparent";
-      		if (i < 4) for (let x = 0; x < 4; x++) drawc(g, trash, x, top - 1, ql, g.top, qs);
-      	}
-      	drawpop(g, brh);
-      	arrow(ql + 2 * qs, g.top + 14.3 * qs, qs * 1.2, "#33ff33");
-      	const hy = g.top + 15.8 * qs;
-      	if (g.held.name) {
-      		ctx.globalAlpha = g.hold ? 1 : 0.54;
-      		drawm(g, g.held.name, g.held.name == "I" || g.held.name == "O" ? 0 : 0.5, 0, ql, hy, qs);
-      		ctx.globalAlpha = 1;
-      	}
-      	arrow(ql + 2 * qs, hy + 2.3 * qs, qs * 1.2, "#ff3333");
-      	let offset = `${g.combo} Combo`.length * -8.5;
-      	ctx.font = "bold 24px Kanchenjunga";
-      	ctx.fillStyle = "#bdb7ff";
-      	ctx.fillText(`${g.combo} Combo`, g.left - 60 + offset, g.top + 30);
-      	offset = `${g.surge} Surge`.length * -8.5;
-      	ctx.fillText(`${g.surge} Surge`, g.left - 60 + offset, g.top + 65);
-      	offset = `${g.sent} Sent`.length * -8.5;
-      	ctx.fillText(`${g.sent} Sent`, g.left - 60 + offset, g.top + 100);
-      }
+	const now = performance.now();
+	fxstep(g, now);
+	const u = g.u || 1;
+	const brw = bw * g.size;
+	const brh = bh * g.size;
+	ctx.globalAlpha = 1;
+	const off = fxoffset(g, now);
+	ctx.save();
+	ctx.translate(off.x, off.y); // bounce and shake everything
+	const fell = g.dead && g.diedAt ? (now - g.diedAt) / 1000 : -1; // seconds since this board topped out
+	if (fell >= 0) { // loser's board falls out of existence
+		const cx = g.left + brw / 2;
+		const cy = g.top + brh / 2;
+		ctx.translate(0, g.size * 45 * fell * fell);
+		ctx.translate(cx, cy);
+		ctx.rotate((g.tilt || 1) * Math.min(fell, 1.5) * 0.3);
+		ctx.translate(-cx, -cy);
+	}
+	if (fell < 2) {
+		if (over && !g.dead) { // winner's board glows yellow
+			const k = Math.min(1, (now - over) / 500);
+			ctx.save();
+			ctx.shadowColor = "rgba(255, 221, 51, 0.8)";
+			ctx.shadowBlur = g.size * 0.9 * k * (0.85 + 0.15 * Math.sin(now * 0.004));
+			ctx.fillStyle = "#03000f";
+			ctx.fillRect(g.left, g.top, brw, brh);
+			ctx.restore();
+			ctx.strokeStyle = `rgba(255, 221, 51, ${0.45 * k})`;
+			ctx.lineWidth = 2;
+			ctx.strokeRect(g.left - 1, g.top - 1, brw + 2, brh + 2);
+		}
+		ctx.fillStyle = "#03000f";
+		ctx.fillRect(g.left, g.top, brw, brh);
+		gridlines(g);
+		drawb(g);
+		if (g.curr.name) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y, g.curr.name, g.curr.rot);
+		if (!g.ai && !g.dead) {
+			ctx.globalAlpha = 0.54;
+			let gdy = 0;
+			while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + gdy)) gdy += 1;
+			gdy -= 1;
+			if (gdy > 0) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y + gdy, g.curr.name, g.curr.rot);
+			ctx.globalAlpha = 1;
+		}
+		const incoming = Math.min(g.pending.reduce((a, c) => a + c.n, 0), bh);
+		ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
+		ctx.fillRect(g.left - 8 * u, g.top + brh - incoming * g.size, 6 * u, incoming * g.size);
+		drawfx(g);
+	}
+	ctx.restore();
+	ctx.globalAlpha = 1;
+	const gone = g.dead && fell >= 2 && gs.length > 2; // knocked out of a multi-board match
+	if (gone) {
+		ctx.textAlign = "center";
+		ctx.fillStyle = "#bdb7ff";
+		ctx.font = `bold ${Math.max(14, Math.round(44 * u))}px Kanchenjunga`;
+		ctx.fillText(`#${g.place}`, g.left + brw / 2, g.top + brh / 2);
+		ctx.textAlign = "start";
+	}
+	const qs = Math.min(g.size * 0.7, brh / 20);
+	const ql = g.left + brw + 20 * u;
+	if (!gone) {
+		ctx.fillStyle = "#03000f";
+		ctx.fillRect(ql, g.top, 4 * qs, 14 * qs);
+		for (let i = 0; i < 5; i++) {
+			const name = g.bag[i];
+			const top = 12 - 3 * i;
+			if (i == 0) {ctx.shadowColor = "rgba(255, 255, 255, 0.85)"; ctx.shadowBlur = qs * 0.7;} // glow on the next piece
+			drawm(g, name, name == "I" || name == "O" ? 0 : 0.5, top, ql, g.top, qs);
+			ctx.shadowBlur = 0;
+			ctx.shadowColor = "transparent";
+			if (i < 4) for (let x = 0; x < 4; x++) drawc(g, trash, x, top - 1, ql, g.top, qs);
+		}
+		drawpop(g, brh);
+		arrow(ql + 2 * qs, g.top + 14.3 * qs, qs * 1.2, "#33ff33");
+		const hy = g.top + 15.8 * qs;
+		if (g.held.name) {
+			ctx.globalAlpha = g.hold ? 1 : 0.54;
+			drawm(g, g.held.name, g.held.name == "I" || g.held.name == "O" ? 0 : 0.5, 0, ql, hy, qs);
+			ctx.globalAlpha = 1;
+		}
+		arrow(ql + 2 * qs, hy + 2.3 * qs, qs * 1.2, "#ff3333");
+	}
+	ctx.globalAlpha = gone ? 0.45 : 1;
+	ctx.font = `bold ${Math.max(9, Math.round(24 * u))}px Kanchenjunga`;
+	ctx.fillStyle = "#bdb7ff";
+	[`${g.combo} Combo`, `${g.surge} Surge`, `${g.sent} Sent`].forEach((t, i) => {
+		ctx.fillText(t, g.left - 60 * u - t.length * 8.5 * u, g.top + (30 + 35 * i) * u);
+	});
+	ctx.globalAlpha = 1;
+}
       function drawmenu(cw, ch) { // draw menu options
-      	canvas.width = cw;
-      	canvas.height = ch;
-      	ctx.fillStyle = "#120038";
-      	ctx.fillRect(0, 0, cw, ch);
-      	const rs = rows();
-      	ctx.textAlign = "center";
-      	ctx.fillStyle = "#bdb7ff";
-      	ctx.font = "bold 64px Kanchenjunga";
-      	ctx.fillText("4-WIDE MANIA", cw / 2, ch * 0.12);
-      	const top = ch * 0.12 + 70;
-      	const gap = Math.min(55, (ch * 0.8 - top - 50) / rs.length);
-      	rs.forEach((row, i) => {
-      		const y = top + i * gap;
-      		const cfg = setup.cpus[row.cpu];
-      		let text = "Start";
-      		if (row.type == "mode") text = `Mode:  < ${setup.versus ? "You vs CPU" : "CPU vs CPU"} >`;
-      		else if (row.type == "skill") text = `${row.label}:  < ${levels[cfg.level].name} (looks ${levels[cfg.level].look} ahead) >`;
-      		else if (row.type == "pps") text = `${row.label}:  < ${cfg.pps.toFixed(1)} PPS >`;
-      		else if (row.type == "width") text = `Board width:  < ${setup.w} >`;
-      		else if (row.type == "height") text = `Board height:  < ${setup.h} >`;
-      		else if (row.type == "spin") text = `Everything is a spin:  < ${setup.spinall ? "on" : "off"} >`;
-      		else if (row.type == "controls") text = "Controls and handling  >";
-      		if (i == sel) {
-      			ctx.fillStyle = "#2a0a6b";
-      			ctx.fillRect(cw / 2 - 380, y - 26, 760, gap - 4);
-      		}
-      		ctx.fillStyle = i == sel ? "#ffffff" : "#bdb7ff";
-      		ctx.font = "bold 24px Kanchenjunga";
-      		if (row.type == "pieces") {
-      			ctx.textAlign = "right";
-      			ctx.fillText("Bag:", cw / 2 - 200, y);
-      			ctx.textAlign = "center";
-      			names.forEach((n, k) => {
-      				const cs = 12;
-      				const sx = cw / 2 - 190 + k * 56;
-      				const filled = pieces[n].flatMap((r, py) => r.flatMap((v, px) => v ? [[px, py]] : []));
-      				const minx = Math.min(...filled.map(c => c[0]));
-      				const maxx = Math.max(...filled.map(c => c[0]));
-      				const miny = Math.min(...filled.map(c => c[1]));
-      				ctx.globalAlpha = setup.pieces[n] ? 1 : 0.25;
-      				drawm(null, n, (56 / cs - (maxx - minx + 1)) / 2 - minx, -miny, sx, y - 20, cs);
-      				ctx.globalAlpha = 1;
-      				if (i == sel && k == bagc) {
-      					ctx.strokeStyle = "#ffffff";
-      					ctx.lineWidth = 2;
-      					ctx.strokeRect(sx + 2, y - 23, 52, 29);
-      				}
-      			});
-      			return;
-      		}
-      		ctx.fillText(text, cw / 2, y);
-      	});
-      	ctx.fillStyle = "#bdb7ff";
-      	ctx.font = "16px Kanchenjunga";
-      	const y = top + rs.length * gap + 20;
-      	ctx.fillText("Up/Down  select     Left/Right  change     Enter  start", cw / 2, y);
-      	ctx.fillText("Shift + Left/Right = ±1 pps or ±5 size", cw / 2, y + 25);
-      	ctx.fillText("Bag: Left/Right  pick     Enter/Space  toggle on/off", cw / 2, y + 50);
-      	ctx.fillText("Bag: [piece letter]  toggle on/off", cw / 2, y + 75);
-      	ctx.textAlign = "start";
-      }
-      function render(time) { // render board
-      	ctx.globalAlpha = 1;
-      	const cw = window.innerWidth;
-      	const ch = window.innerHeight;
-      	if (screen == "controls") {drawcontrols(cw, ch); requestAnimationFrame(render); return;}
-      	if (screen == "menu") {
-      		drawmenu(cw, ch);
-      		requestAnimationFrame(render);
-      		return;
-      	}
-      	if (!p.dead && !ai.dead) {
-      		if (p.ai) cpu(p, time);
-      		else {inputstep(performance.now()); tick(p, time);}
-      		if (!p.dead) cpu(ai, time);
-      	}
-      	if ((p.dead || ai.dead) && !over) { // round just ended
-      		over = performance.now();
-      		p.tilt = Math.random() < 0.5 ? -1 : 1;
-      		ai.tilt = Math.random() < 0.5 ? -1 : 1;
-      		sound(p.dead && (ai.dead || setup.versus) ? "Alose" : "Awin");
-      	}
-      	const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / (bh + 3)) * 0.95);
-      	const brw = bw * size;
-      	const brh = bh * size;
-      	canvas.width = cw;
-      	canvas.height = ch;
-      	ctx.fillStyle = "#120038";
-      	ctx.fillRect(0, 0, cw, ch);
-      	const gx = (cw - (brw * 2 + size * 5.6 + 560)) / 2;
-      	p.left = gx + 140;
-      	ai.left = p.left + brw + size * 2.8 + 380;
-      	for (const g of [p, ai]) {
-      		g.size = size;
-      		g.top = (ch - brh) / 2;
-      		draw(g, ch - brh);
-      	}
-      	const mid = p.left + brw + size * 2.8 + 140;
-      	const bots = setup.versus ? [ai] : [p, ai];
-      	ctx.textAlign = "center";
-      	ctx.fillStyle = "#bdb7ff";
-      	ctx.font = "bold 32px Kanchenjunga";
-      	ctx.fillText(setup.versus ? "VS CPU" : "CPU VS CPU", mid, ch - brh + 40);
-      	bots.forEach((g, i) => {
-      		const y = ch - brh + 80 + i * 60;
-      		const lv = levels[g.cfg.level];
-      		ctx.font = "bold 22px Kanchenjunga";
-      		ctx.fillText(`${bots.length > 1 && g == tuned ? "> " : ""}${bots.length > 1 ? (g == p ? "Left " : "Right ") : ""}${lv.name}`, mid, y);
-      		ctx.font = "16px Kanchenjunga";
-      		ctx.fillText(`${aiPps(g).toFixed(1)} PPS, looks ${lv.look} ahead`, mid, y + 25);
-      	});
-      	ctx.font = "16px Kanchenjunga";
-      	const hints = ["1-0  skill", "- = speed (Shift: ±1)", ...(bots.length > 1 ? ["Tab  switch cpu"] : []), "R  restart", "M  menu", ...(setup.spinall ? ["everything is a spin"] : []), ...(bagp().length < names.length ? [`bag: ${bagp().join(" ")}`] : [])];
-      	hints.forEach((h, i) => ctx.fillText(h, mid, ch - brh + 80 + bots.length * 60 + 20 + i * 25));
-      	if (p.dead || ai.dead) {
-      		ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
-      		ctx.beginPath();
-      		ctx.rect(0, 0, cw, ch);
-      		const win = p.dead && !ai.dead ? ai : ai.dead && !p.dead ? p : null;
-      		if (win) ctx.rect(win.left - size * 1.5, win.top - size * 3, brw + size * 3, brh + size * 4.5); // keep the winner's glow undimmed
-      		ctx.fill("evenodd");
-      		ctx.fillStyle = "#bdb7ff";
-      		ctx.font = "bold 64px Kanchenjunga";
-      		const msg = p.dead && ai.dead ? "DRAW" : setup.versus ? (ai.dead ? "YOU WIN" : "YOU LOSE") : (ai.dead ? "LEFT CPU WINS" : "RIGHT CPU WINS");
-      		ctx.fillText(msg, cw / 2, ch / 2);
-      		ctx.font = "bold 24px Kanchenjunga";
-      		ctx.fillText("press R to restart or M for the menu", cw / 2, ch / 2 + 40);
-      	}
-      	ctx.textAlign = "start";
-      	requestAnimationFrame(render);
-      }
+	canvas.width = cw;
+	canvas.height = ch;
+	ctx.fillStyle = "#120038";
+	ctx.fillRect(0, 0, cw, ch);
+	const rs = rows();
+	const m = modes[setup.mode];
+	ctx.textAlign = "center";
+	ctx.fillStyle = "#bdb7ff";
+	ctx.font = "bold 64px Kanchenjunga";
+	ctx.fillText("4-WIDE MANIA", cw / 2, ch * 0.12);
+	const top = ch * 0.12 + 70;
+	const gap = Math.min(55, (ch * 0.8 - top - 50) / rs.length);
+	const fs = Math.max(11, Math.min(24, gap * 0.62));
+	rs.forEach((row, i) => {
+		const y = top + i * gap;
+		const cfg = setup.cpus[row.cpu];
+		let text = "Start";
+		if (row.type == "mode") text = `Mode:  < ${m.name} >`;
+		else if (row.type == "count") text = `${m.label}:  < ${setup.counts[m.id]} >`;
+		else if (row.type == "target") text = `Garbage target:  < ${setup.target == "even" ? "evenly spread" : "highest stack"} >`;
+		else if (row.type == "cpu") text = `CPU ${row.cpu + 1}:  < ${levels[cfg.level].name} >  ${cfg.pps.toFixed(1)} PPS`;
+		else if (row.type == "randomize") text = "Randomize CPUs";
+		else if (row.type == "note") text = "CPU skill:  random near your rating, you plus the CPUs, half advance each round";
+		else if (row.type == "skill") text = `${row.label}:  < ${levels[cfg.level].name} (looks ${levels[cfg.level].look} ahead) >`;
+		else if (row.type == "pps") text = `${row.label}:  < ${cfg.pps.toFixed(1)} PPS >`;
+		else if (row.type == "width") text = `Board width:  < ${setup.w} >`;
+		else if (row.type == "height") text = `Board height:  < ${setup.h} >`;
+		else if (row.type == "spin") text = `Everything is a spin:  < ${setup.spinall ? "on" : "off"} >`;
+		else if (row.type == "boards") text = `Force all boards visible:  < ${setup.forceAllBoards ? "on" : "off"} >`;
+		else if (row.type == "controls") text = "Settings  >";
+		if (i == sel) {
+			ctx.fillStyle = "#2a0a6b";
+			ctx.fillRect(cw / 2 - 380, y - fs * 1.05, 760, fs * 1.45);
+		}
+		ctx.fillStyle = i == sel ? "#ffffff" : "#bdb7ff";
+		ctx.font = `bold ${fs}px Kanchenjunga`;
+		if (row.type == "pieces") {
+			ctx.textAlign = "right";
+			ctx.fillText("Bag:", cw / 2 - 200, y);
+			ctx.textAlign = "center";
+			names.forEach((n, k) => {
+				const cs = Math.max(6, Math.min(12, gap * 0.45));
+				const sx = cw / 2 - 190 + k * 56;
+				const filled = pieces[n].flatMap((r, py) => r.flatMap((v, px) => v ? [[px, py]] : []));
+				const minx = Math.min(...filled.map(c => c[0]));
+				const maxx = Math.max(...filled.map(c => c[0]));
+				const miny = Math.min(...filled.map(c => c[1]));
+				ctx.globalAlpha = setup.pieces[n] ? 1 : 0.25;
+				drawm(null, n, (56 / cs - (maxx - minx + 1)) / 2 - minx, -miny, sx, y - cs * 1.7, cs);
+				ctx.globalAlpha = 1;
+				if (i == sel && k == bagc) {
+					ctx.strokeStyle = "#ffffff";
+					ctx.lineWidth = 2;
+					ctx.strokeRect(sx + 2, y - cs * 1.9, 52, cs * 2.4);
+				}
+			});
+			return;
+		}
+		ctx.fillText(text, cw / 2, y);
+	});
+	ctx.fillStyle = "#bdb7ff";
+	ctx.font = "16px Kanchenjunga";
+	const y = top + rs.length * gap + 20;
+	ctx.fillText("Up/Down  select     Left/Right  change     Enter  start", cw / 2, y);
+	ctx.fillText("Shift + Left/Right = ±1 pps or ±5 size/count", cw / 2, y + 25);
+	ctx.fillText("CPU rows: Left/Right skill, 1-0 skill, - = speed, Shift + Left/Right = ±1 pps", cw / 2, y + 50);
+	ctx.fillText("Bag: Left/Right pick, Enter/Space toggle, or press the piece letter", cw / 2, y + 75);
+	ctx.textAlign = "start";
+}
+      function layout(cw, ch) { // place the boards on screen
+	const n = gs.length;
+	const focus = view && n > 1 && !setup.forceAllBoards;
+	if (focus) {
+		const others = gs.filter(g => g !== view);
+		const mainSize = Math.max(8, Math.min(40, ch * 0.78 / bh, cw * 0.40 / bw));
+		const mainW = bw * mainSize;
+		const mainH = bh * mainSize;
+		view.size = mainSize;
+		view.u = 1;
+		view.left = (cw - mainW) / 2;
+		view.top = (ch - mainH) / 2 + 12;
+		view.labelY = view.top - 14;
+
+		const rows = Math.ceil(others.length / 2);
+		const sideW = Math.max(0, (cw - mainW) / 2 - 28);
+		const miniSize = Math.max(2, Math.min(
+			mainSize * 0.38,
+			(sideW - 24) / (bw + 1),
+			(ch - 70) / Math.max(1, rows * (bh + 1.5))
+		));
+		const miniH = bh * miniSize;
+		const miniW = bw * miniSize;
+		const gapY = Math.max(5, Math.min(18, (ch - rows * miniH - 50) / Math.max(1, rows - 1)));
+		const totalH = rows * miniH + (rows - 1) * gapY;
+		others.forEach((g, i) => {
+			const side = i % 2;
+			const row = Math.floor(i / 2);
+			g.size = miniSize;
+			g.u = Math.min(1, miniSize / 24);
+			g.left = side == 0 ? 14 : cw - miniW - 14;
+			g.top = (ch - totalH) / 2 + row * (miniH + gapY) + 12;
+			g.labelY = g.top - 5;
+		});
+		return {grid: false, focused: true, brh: mainH, mid: cw / 2};
+	}
+
+	if (n == 2) {
+		const size = Math.max(8, Math.min((cw - 560) / (bw * 2 + 5.6), ch / (bh + 3)) * 0.95);
+		const brw = bw * size;
+		const brh = bh * size;
+		const gx = (cw - (brw * 2 + size * 5.6 + 560)) / 2;
+		gs[0].left = gx + 140;
+		gs[1].left = gs[0].left + brw + size * 2.8 + 380;
+		for (const g of gs) {g.size = size; g.top = (ch - brh) / 2; g.u = 1;}
+		return {grid: false, brh: brh, mid: gs[0].left + brw + size * 2.8 + 140};
+	}
+	const top0 = 34;
+	const area = ch - top0 - 28;
+	let best = null;
+	for (let c = 1; c <= n; c++) {
+		const r = Math.ceil(n / c);
+		const W = cw / c;
+		const H = area / r;
+		const s = Math.min(W / (bw + 2.8 + 160 / 24), (H - 38) / (bh + 1.5));
+		if (!best || s > best.s) best = {c: c, r: r, s: s, W: W, H: H};
+	}
+	const s = Math.max(5, best.s);
+	const u = Math.min(1, s / 24);
+	const brw = bw * s;
+	const brh = bh * s;
+	const qs = Math.min(s * 0.7, brh / 20);
+	const fl = Math.max(10, 15 * u);
+	const tot = 140 * u + brw + 20 * u + 4 * qs;
+	const used = fl + 10 + brh;
+	gs.forEach((g, i) => {
+		const row = Math.floor(i / best.c);
+		const inRow = row == best.r - 1 ? n - row * best.c : best.c;
+		const col = i - row * best.c;
+		const x0 = (cw - inRow * best.W) / 2 + col * best.W;
+		const y0 = top0 + row * best.H + Math.max(0, (best.H - used) / 2);
+		g.size = s;
+		g.u = u;
+		g.left = x0 + (best.W - tot) / 2 + 140 * u;
+		g.labelY = y0 + fl;
+		g.top = y0 + fl + 10;
+	});
+	return {grid: true};
+}
+function overmsg(win) { // end of round message
+	const m = modes[setup.mode];
+	const sub = "press R to restart or M for the menu";
+	if (tour) {
+		if (tour.champ) return [tour.champ.human ? "YOU WIN THE TOURNAMENT" : `${tour.champ.name} (${levels[tour.champ.cfg.level].name}) WINS THE TOURNAMENT`, "press R for a new tournament or M for the menu"];
+		if (!p.ai && win) return [win == p ? "YOU ADVANCE" : "YOU ARE ELIMINATED", win == p ? "next match starting soon  (Space: now)" : "the tournament goes on  (Space: continue)"];
+		return [win ? `${win.name} ADVANCES` : "DRAW - REMATCH", "next match starting soon  (Space: now)"];
+	}
+	if (!win) return ["DRAW", sub];
+	if (m.id == "duel") return [win == p ? "YOU WIN" : "YOU LOSE", sub];
+	if (m.id == "cvc") return [win == gs[0] ? "LEFT CPU WINS" : "RIGHT CPU WINS", sub];
+	if (m.id == "arena") return [win == p ? "YOU WIN" : `${win.name} WINS`, (win == p ? "" : `you placed #${p.place}   `) + sub];
+	return [`${win.name} WINS`, sub];
+}
+function render(time) { // render board
+	ctx.globalAlpha = 1;
+	updateRatingBox();
+	const cw = window.innerWidth;
+	const ch = window.innerHeight;
+	if (screen == "controls") {drawcontrols(cw, ch); requestAnimationFrame(render); return;}
+	if (screen == "menu") {
+		drawmenu(cw, ch);
+		requestAnimationFrame(render);
+		return;
+	}
+	frameId += 1;
+	if (tour && over && !tour.champ && performance.now() >= tour.nextAt) tourAdvance();
+	if (!over) {
+		const n = gs.length;
+		for (let k = 0; k < n; k++) { // rotate the order so no cpu always thinks first
+			const g = gs[(k + frameId) % n];
+			if (g.dead) continue;
+			if (g.ai) cpu(g, time);
+			else {inputstep(performance.now()); tick(g, time);}
+		}
+		const alive = gs.filter(g => !g.dead);
+		for (const g of gs) {
+			if (g.dead && !g.diedAt) {
+				g.diedAt = performance.now();
+				g.tilt = Math.random() < 0.5 ? -1 : 1;
+				g.place = alive.length + 1;
+				if (g.place != 2) sound("Adie", 1, ctx2.currentTime, g.vol); // everyone but the runner-up
+			}
+		}
+		if (view && view.dead && !over && performance.now() - view.diedAt > 1000) { // focus moves on to a board still alive
+			const vi = gs.indexOf(view);
+			for (let k = 1; k <= gs.length; k++) {
+				const o = gs[(vi + k) % gs.length];
+				if (!o.dead) {view = o; break;}
+			}
+		}
+		if (alive.length <= 1) { // round just ended
+			over = performance.now();
+			if (alive.length == 1) alive[0].place = 1;
+			rateRound();
+			const lose = p.ai ? alive.length == 0 : p.dead;
+			sound(lose ? "Alose" : "Awin");
+			if (tour) tourFinish();
+		}
+	}
+	canvas.width = cw;
+	canvas.height = ch;
+	ctx.fillStyle = "#120038";
+	ctx.fillRect(0, 0, cw, ch);
+	const L = layout(cw, ch);
+	if (L.focused) {
+		for (const g of gs) {
+			ctx.save();
+			ctx.globalAlpha = g === view ? 1 : 0.30;
+			draw(g);
+			ctx.restore();
+		}
+	} else {
+		for (const g of gs) draw(g);
+	}
+	ctx.textAlign = "center";
+	ctx.fillStyle = "#bdb7ff";
+	if (L.focused) {
+		ctx.font = "bold 24px Kanchenjunga";
+		ctx.fillText(view === p ? "YOUR BOARD" : `WATCHING ${view.name}${view.ai ? " - " + levels[view.cfg.level].name : ""}`, cw / 2, 28);
+		ctx.font = "15px Kanchenjunga";
+		if (tour) {
+			const foe = gs.find(g => g.ai && g !== view) || gs.find(g => g !== view);
+			ctx.fillText(`TOURNAMENT   Round ${tour.round} of ${tour.rounds}   ${tour.winners.length + (tour.matches.length - tour.mi) * 2} players left${foe && foe.ai ? `   vs ${foe.name} - ${levels[foe.cfg.level].name}` : ""}`, cw / 2, ch - 10);
+		} else ctx.fillText(`${gs.filter(g => !g.dead).length} of ${gs.length} alive   target: ${setup.target == "even" ? "evenly spread" : "highest stack"}`, cw / 2, ch - 10);
+	} else if (!L.grid) {
+		const mid = L.mid;
+		const brh = L.brh;
+		const bots = gs.filter(g => g.ai);
+		const extra = [];
+		if (tour) {
+			extra.push(`Round ${tour.round} of ${tour.rounds}`, `Match ${tour.cur + 1} of ${tour.matches.length}`, `${tour.winners.length + (tour.matches.length - tour.mi) * 2} players left`);
+			if (tour.byes.length) extra.push(`Bye: ${tour.byes.map(e => e.name).join(", ")}`);
+		}
+		ctx.font = "bold 32px Kanchenjunga";
+		ctx.fillText(tour ? "TOURNAMENT" : bots.length > 1 ? "CPU VS CPU" : "VS CPU", mid, ch - brh + 40);
+		ctx.font = "16px Kanchenjunga";
+		extra.forEach((t, i) => ctx.fillText(t, mid, ch - brh + 68 + i * 22));
+		const y0 = ch - brh + 80 + extra.length * 22 + (extra.length ? 10 : 0);
+		bots.forEach((g, i) => {
+			const y = y0 + i * 60;
+			const lv = levels[g.cfg.level];
+			ctx.font = "bold 22px Kanchenjunga";
+			ctx.fillText(`${bots.length > 1 && g == tuned ? "> " : ""}${bots.length > 1 ? g.name + " - " : ""}${lv.name}`, mid, y);
+			ctx.font = "16px Kanchenjunga";
+			ctx.fillText(`${aiPps(g).toFixed(1)} PPS, looks ${lv.look} ahead`, mid, y + 25);
+		});
+		ctx.font = "16px Kanchenjunga";
+		const hints = ["1-0  skill", "- = speed (Shift: ±1)", ...(bots.length > 1 ? ["Tab  switch cpu"] : []), tour ? "R  new tournament" : "R  restart", "M  menu", ...(tour ? ["S  skip match", "Space  next match"] : []), ...(setup.spinall ? ["everything is a spin"] : []), ...(bagp().length < names.length ? [`bag: ${bagp().join(" ")}`] : [])];
+		hints.forEach((h, i) => ctx.fillText(h, mid, y0 + bots.length * 60 + 20 + i * 25));
+	} else {
+		const m = modes[setup.mode];
+		const alive = gs.filter(g => !g.dead).length;
+		ctx.font = "bold 20px Kanchenjunga";
+		ctx.fillText(`${m.name.toUpperCase()}   ${alive} of ${gs.length} alive   target: ${setup.target == "even" ? "evenly spread" : "highest stack"}`, cw / 2, 24);
+		ctx.font = "15px Kanchenjunga";
+		ctx.fillText(`1-0 skill   - = speed (Shift: ±1)   Tab switch cpu (> marks it)   R restart   M menu${setup.spinall ? "   everything is a spin" : ""}`, cw / 2, ch - 8);
+		for (const g of gs) {
+			const lv = g.ai ? levels[g.cfg.level] : null;
+			ctx.globalAlpha = g.dead ? 0.5 : 1;
+			ctx.font = `bold ${Math.round(Math.max(10, 15 * g.u))}px Kanchenjunga`;
+			ctx.fillStyle = g == tuned ? "#ffffff" : "#bdb7ff";
+			const t = (g == tuned ? "> " : "") + g.name + (lv ? ` - ${lv.name} ${aiPps(g).toFixed(1)} PPS` : "") + (g.dead ? ` (#${g.place})` : "");
+			ctx.fillText(t, g.left + g.size * bw / 2, g.labelY);
+		}
+		ctx.globalAlpha = 1;
+		ctx.fillStyle = "#bdb7ff";
+	}
+	if (over) {
+		ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+		ctx.beginPath();
+		ctx.rect(0, 0, cw, ch);
+		const win = gs.find(g => !g.dead);
+		if (win) ctx.rect(win.left - win.size * 1.5, win.top - win.size * 3, bw * win.size + win.size * 3, bh * win.size + win.size * 4.5); // keep the winner's glow undimmed
+		ctx.fill("evenodd");
+		const [title, sub] = overmsg(win);
+		ctx.fillStyle = "#bdb7ff";
+		ctx.font = "bold 64px Kanchenjunga";
+		ctx.fillText(title, cw / 2, ch / 2);
+		ctx.font = "bold 24px Kanchenjunga";
+		ctx.fillText(sub, cw / 2, ch / 2 + 40);
+	}
+	ctx.textAlign = "start";
+	requestAnimationFrame(render);
+}
       const canvas = document.querySelector("canvas");
       const ctx = canvas.getContext("2d");
       const names = ["O", "T", "S", "Z", "L", "J", "I", "U"];
@@ -1260,8 +1572,74 @@ function place(g) { // place down piece
       	{name: "Impossible", look: 10, pps: 3.5, style: "free"},
       	{name: "Inhumane", look: 15, pps: 4, style: "free"},
       ];
+      const levelRatings = [100, 200, 400, 700, 900, 1200, 1600, 2000, 2500, 3000]; // rating of each cpu level
+      const ranks = ["D", "C", "B", "A-", "A", "A+", "S-", "S", "S+", "SS"];
+      let rating = 0;
+      let ratedGames = 0;
+      let ratingDelta = 0;
+      let ratingDeltaAt = 0;
+      let ratingText = "";
+      function loadRating() { // read rating from localstorage
+      	try {
+      		const d = JSON.parse(localStorage.getItem("4wide-rating"));
+      		if (d && isFinite(d.rating)) {
+      			rating = Math.max(0, Number(d.rating));
+      			ratedGames = Math.max(0, Math.floor(Number(d.games) || 0));
+      		}
+      	} catch (e) {}
+      }
+      function saveRating() { // write rating to localstorage
+      	try {
+      		localStorage.setItem("4wide-rating", JSON.stringify({rating: Math.round(rating * 10) / 10, games: ratedGames}));
+      	} catch (e) {}
+      }
+      function rankOf(r) { // rank letter for a rating
+      	let k = 0;
+      	for (let i = 0; i < levelRatings.length; i++) if (r >= levelRatings[i]) k = i;
+      	return ranks[k];
+      }
+      function cpuRating(cfg) { // a cpu's rating: its level, nudged by a custom speed
+      	const ratio = cfg.pps / levels[cfg.level].pps;
+      	return Math.min(4000, Math.max(0, levelRatings[cfg.level] * Math.pow(ratio, 0.7)));
+      }
+      function ratedLevel() { // random cpu level near your rating: slightly easier, closest, or slightly harder
+      	let best = 0;
+      	for (let i = 1; i < levelRatings.length; i++) if (Math.abs(levelRatings[i] - rating) < Math.abs(levelRatings[best] - rating)) best = i;
+      	return Math.min(levels.length - 1, Math.max(0, best + Math.floor(Math.random() * 3) - 1));
+      }
+      function rateRound() { // update rating after a round against cpus
+      	if (!p || p.ai || unrated) return;
+      	const foes = gs.filter(g => g.ai);
+      	if (foes.length == 0) return;
+      	const alive = g => Math.max(1, ((g.dead ? g.diedAt : over) - g.startT) / 1000);
+      	let sum = 0;
+      	for (const o of foes) {
+      		const result = p.place < o.place ? 1 : p.place > o.place ? 0 : 0.5; // who lasted longer
+      		const tshare = alive(p) / (alive(p) + alive(o)); // survival time share
+      		const ashare = p.sent + o.sent > 0 ? p.sent / (p.sent + o.sent) : 0.5; // attack share
+      		const score = 0.7 * result + 0.15 * tshare + 0.15 * ashare;
+      		const expect = 1 / (1 + Math.pow(10, (o.rate - rating) / 400));
+      		sum += score - expect;
+      	}
+      	const k = 40 + 80 * Math.exp(-ratedGames / 12); // big swings while placing, steadier later
+      	const old = rating;
+      	rating = Math.max(0, rating + k * sum / Math.sqrt(foes.length));
+      	ratedGames += 1;
+      	ratingDelta = Math.round(rating) - Math.round(old);
+      	ratingDeltaAt = performance.now();
+      	saveRating();
+      }
+      function updateRatingBox() { // top left rank and rating
+      	const box = document.getElementById("ratingbox");
+      	if (!box) return;
+      	let t = `<span class="rk">${rankOf(rating)}</span>${Math.round(rating)}`;
+      	if (ratingDelta != 0 && performance.now() - ratingDeltaAt < 8000) t += ` <span style="color:${ratingDelta > 0 ? "#66ff88" : "#ff7777"}">${ratingDelta > 0 ? "+" : ""}${ratingDelta}</span>`;
+      	if (screen == "play" && unrated && p && !p.ai) t += ` <span style="font-size:14px">(unrated)</span>`;
+      	if (t != ratingText) {box.innerHTML = t; ratingText = t;}
+      }
+      loadRating();
       const styles = { // cpu stacking styles (boards wider than 4)
-      	flat: {name: "9-0", split: null, quad: 3.5, wellw: 1, iDebt: 0.8, height: 0.1, pocket: 0, pcap: 0, tslot: 0, setup: 0, preserve: 0, aB: 3, tB: 3}, // one fixed edge well, deliberate tetrises
+      	flat: {name: "9-0", nospin: true, split: null, quad: 3.5, wellw: 1, iDebt: 0.8, height: 0.1, pocket: 0, pcap: 0, tslot: 0, setup: 0, preserve: 0, aB: 3, tB: 3}, // one fixed edge well, deliberate tetrises
       	tspin: {name: "6-3 T-spin", split: 6 / 9, quad: 1.1, wellw: 1.1, iDebt: 0.9, height: 0.15, pocket: 0.35, pcap: 2, tslot: 4.2, setup: 1.1, preserve: 0.5, aB: 5, tB: 23}, // prioritize building and completing T-slots
       	allspin: {name: "7-2 all-spin", split: 7 / 9, quad: 1.5, wellw: 2.1, iDebt: 2.8, height: 0.5, pocket: 4.8, pcap: 4, tslot: 2.2, setup: 1.35, preserve: 1.05, aB: 22, tB: 18}, // prioritize usable non-T caves while avoiding I-dependent wells
       	free: {name: "freestyle", split: 6 / 9, quad: 1.1, wellw: 1.25, iDebt: 1.5, height: 0.3, pocket: 4.1, pcap: 5, tslot: 3.1, setup: 1.2, preserve: 0.6, aB: 24, tB: 22} // favor strong spin opportunities without forcing them
@@ -1280,11 +1658,24 @@ function place(g) { // place down piece
       	x: g => morph(g),
       	sdrop: g => {while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) move(g, 0, 1);},
       };
-      const setup = {versus: true, w: bw, h: bh, spinall: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: [{level: 0, pps: levels[0].pps}, {level: 0, pps: levels[0].pps}]};
+      const modes = [
+	{id: "duel", name: "You vs CPU", human: true},
+	{id: "cvc", name: "CPU vs CPU", human: false},
+	{id: "arena", name: "You vs CPUs", human: true, min: 2, max: 7, label: "Opponents"},
+	{id: "brawl", name: "CPU brawl", human: false, min: 2, max: 8, label: "CPUs"},
+	{id: "tourney", name: "Tournament", human: false, min: 2, max: 64, label: "CPUs"}
+];
+const setup = {mode: 0, target: "even", counts: {arena: 3, brawl: 4, tourney: 16}, w: bw, h: bh, spinall: false, forceAllBoards: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: Array.from({length: 8}, () => ({level: 0, pps: levels[0].pps}))};
+let gs = []; // every board in play
+let tour = null; // tournament state
+let thinkFrame = -1;
+let frameId = 0;
       let screen = "menu";
       let sel = 0;
       let bagc = 0;
       let p; let ai; let tuned;
+      let view = null; // board shown large (you, or whoever you're watching)
+      let unrated = false; // cpu was tuned mid-round, so the round doesn't count
       let pres = {};
       let gravity = 1;
       let last = 0;
@@ -1427,7 +1818,7 @@ function place(g) { // place down piece
       	ctx.textAlign = "center";
       	ctx.fillStyle = "#bdb7ff";
       	ctx.font = "bold 48px Kanchenjunga";
-      	ctx.fillText("CONTROLS", cw / 2, 70);
+      	ctx.fillText("SETTINGS", cw / 2, 70);
       	const top = 135;
       	const gap = Math.min(40, (ch - top - 110) / (rs.length + 1));
       	const fs = Math.max(14, Math.min(24, gap * 0.6));
@@ -1486,73 +1877,91 @@ function place(g) { // place down piece
       document.fonts.add(font);
       let loop = requestAnimationFrame(render);
       window.onkeydown = (event) => {
-      	event.preventDefault();
-      	if (event.repeat) return;
-      	pres[event.key] = true;
-      	const step = event.key == "-" ? -0.1 : event.key == "=" ? 0.1 : event.key == "_" ? -1 : event.key == "+" ? 1 : 0;
-      	if (screen == "menu") {
-      		const rs = rows();
-      		const row = rs[sel];
-      		const cfg = setup.cpus[row.cpu];
-      		if (event.key == "ArrowUp") {
-      			sel = (sel + rs.length - 1) % rs.length;
-      		} else if (event.key == "ArrowDown") {
-      			sel = (sel + 1) % rs.length;
-      		} else if (event.key == "ArrowLeft" || event.key == "ArrowRight") {
-      			const d = event.key == "ArrowLeft" ? -1 : 1;
-      			if (row.type == "mode") setup.versus = !setup.versus;
-      			else if (row.type == "skill") setlevel(cfg, cfg.level + d);
-      			else if (row.type == "pps") bump(cfg, d * (event.shiftKey ? 1 : 0.1));
-      			else if (row.type == "width") setup.w = Math.min(20, Math.max(4, setup.w + d * (event.shiftKey ? 5 : 1)));
-      			else if (row.type == "height") setup.h = Math.min(40, Math.max(8, setup.h + d * (event.shiftKey ? 5 : 1)));
-      			else if (row.type == "spin") setup.spinall = !setup.spinall;
-      			else if (row.type == "pieces") bagc = (bagc + d + names.length) % names.length;
-      		} else if (/^[0-9]$/.test(event.key) && row.type == "skill") {
-      			setlevel(cfg, event.key == "0" ? 9 : event.key - 1);
-      		} else if (step && row.type == "pps") {
-      			bump(cfg, step);
-      		} else if (row.type == "pieces" && (event.key == "Enter" || event.key == " ")) {
-      			bagt(bagc);
-      		} else if (row.type == "pieces" && names.includes(event.key.toUpperCase())) {
-      			bagc = names.indexOf(event.key.toUpperCase());
-      			bagt(bagc);
-      		} else if (row.type == "controls" && (event.key == "Enter" || event.key == " ")) {
-      			screen = "controls"; csel = 0; binding = null; bindmsg = "";
-      		} else if (event.key == "Enter" || event.key == " ") {
-      			start();
-      		}
-      		return;
-      	}
-      	if (screen == "controls") {ctlkey(event); return;}
-      	if (event.key == "r" || event.key == "R") {
-      		start();
-      		return;
-      	} else if (event.key == "m" || event.key == "M" || event.key == "Escape") {
-      		screen = "menu";
-      		return;
-      	} else if (event.key == "Tab") {
-      		if (!setup.versus) tuned = tuned == p ? ai : p;
-      		return;
-      	} else if (/^[0-9]$/.test(event.key)) {
-      		setlevel(tuned.cfg, event.key == "0" ? 9 : event.key - 1);
-      		return;
-      	} else if (step) {
-      		bump(tuned.cfg, step);
-      		return;
-      	}
-      	if (p.ai || p.dead || ai.dead) return;
-      	const act = actionof(event.key);
-      	const now = performance.now();
-      	if (act == "left") dirpress(-1, now);
-      	else if (act == "right") dirpress(1, now);
-      	else if (act == "soft") softpress();
-      	else if (act == "hard") drop(p);
-      	else if (act == "cw") rotatep(p, "cw");
-      	else if (act == "ccw") rotatep(p, "ccw");
-      	else if (act == "flip") rotatep(p, "180");
-      	else if (act == "morph") morph(p);
-      	else if (act == "hold" && p.hold) swap(p);
-      };
+	event.preventDefault();
+	if (event.repeat) return;
+	pres[event.key] = true;
+	const step = event.key == "-" ? -0.1 : event.key == "=" ? 0.1 : event.key == "_" ? -1 : event.key == "+" ? 1 : 0;
+	if (screen == "menu") {
+		const rs = rows();
+		sel = Math.min(sel, rs.length - 1);
+		const row = rs[sel];
+		const cfg = setup.cpus[row.cpu];
+		const m = modes[setup.mode];
+		const key = event.key;
+		if (key == "ArrowUp") {
+			sel = (sel + rs.length - 1) % rs.length;
+		} else if (key == "ArrowDown") {
+			sel = (sel + 1) % rs.length;
+		} else if (key == "ArrowLeft" || key == "ArrowRight") {
+			const d = key == "ArrowLeft" ? -1 : 1;
+			if (row.type == "mode") setup.mode = (setup.mode + d + modes.length) % modes.length;
+			else if (row.type == "count") setup.counts[m.id] = Math.min(m.max, Math.max(m.min, setup.counts[m.id] + d * (event.shiftKey ? 5 : 1)));
+			else if (row.type == "target") setup.target = setup.target == "even" ? "high" : "even";
+			else if (row.type == "skill") setlevel(cfg, cfg.level + d);
+			else if (row.type == "cpu") {if (event.shiftKey) bump(cfg, d); else setlevel(cfg, cfg.level + d);}
+			else if (row.type == "pps") bump(cfg, d * (event.shiftKey ? 1 : 0.1));
+			else if (row.type == "width") setup.w = Math.min(20, Math.max(4, setup.w + d * (event.shiftKey ? 5 : 1)));
+			else if (row.type == "height") setup.h = Math.min(40, Math.max(8, setup.h + d * (event.shiftKey ? 5 : 1)));
+			else if (row.type == "spin") setup.spinall = !setup.spinall;
+			else if (row.type == "boards") setup.forceAllBoards = !setup.forceAllBoards;
+			else if (row.type == "pieces") bagc = (bagc + d + names.length) % names.length;
+		} else if (/^[0-9]$/.test(key) && (row.type == "skill" || row.type == "cpu")) {
+			setlevel(cfg, key == "0" ? 9 : key - 1);
+		} else if (step && (row.type == "pps" || row.type == "cpu")) {
+			bump(cfg, step);
+		} else if (row.type == "randomize" && (key == "Enter" || key == " ")) {
+			for (const c of setup.cpus) setlevel(c, ratedLevel());
+		} else if (row.type == "pieces" && (key == "Enter" || key == " ")) {
+			bagt(bagc);
+		} else if (row.type == "pieces" && names.includes(key.toUpperCase())) {
+			bagc = names.indexOf(key.toUpperCase());
+			bagt(bagc);
+		} else if (row.type == "controls" && (key == "Enter" || key == " ")) {
+			screen = "controls"; csel = 0; binding = null; bindmsg = "";
+		} else if (key == "Enter" || key == " ") {
+			start();
+		}
+		return;
+	}
+	if (screen == "controls") {ctlkey(event); return;}
+	if (event.key == "r" || event.key == "R") {
+		start();
+		return;
+	} else if (event.key == "m" || event.key == "M" || event.key == "Escape") {
+		screen = "menu";
+		return;
+	} else if (event.key == "Tab") {
+		const list = gs.filter(g => g.ai && !g.dead);
+		if (list.length > 1) tuned = list[(list.indexOf(tuned) + 1) % list.length];
+		return;
+	} else if (tour && (event.key == " " || event.key == "Enter")) {
+		tourAdvance();
+		return;
+	} else if (tour && (event.key == "s" || event.key == "S")) {
+		tourSkip();
+		return;
+	} else if (/^[0-9]$/.test(event.key)) {
+		setlevel(tuned.cfg, event.key == "0" ? 9 : event.key - 1);
+		if (!over) unrated = true;
+		return;
+	} else if (step) {
+		bump(tuned.cfg, step);
+		if (!over) unrated = true;
+		return;
+	}
+	if (p.ai || p.dead || over) return;
+	const act = actionof(event.key);
+	const now = performance.now();
+	if (act == "left") dirpress(-1, now);
+	else if (act == "right") dirpress(1, now);
+	else if (act == "soft") softpress();
+	else if (act == "hard") drop(p);
+	else if (act == "cw") rotatep(p, "cw");
+	else if (act == "ccw") rotatep(p, "ccw");
+	else if (act == "flip") rotatep(p, "180");
+	else if (act == "morph") morph(p);
+	else if (act == "hold" && p.hold) swap(p);
+};
       window.onkeyup = (event) => {
       	delete pres[event.key];
       	const act = actionof(event.key);
