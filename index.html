@@ -276,9 +276,10 @@ function send(g, n) { // route garbage to the other boards
       }
       function spinCheck(g, name, matrix, x, y, rotated) { // rotation-based all-spin detection
       	if (!rotated) return false;
-      	// Every piece uses a three-of-four corner test by default. The optional
-      	// loose mode broadens non-T spins to any rotated placement touching the stack.
-      	if (name != "T" && setup.spinall) return immobile(g, matrix, x, y);
+      	// T uses the three-of-four corner test. Every other piece counts as a spin when
+      	// its rotation leaves it immobile. The optional loose mode broadens non-T spins
+      	// to any rotated placement touching the stack.
+      	if (name != "T") return setup.spinall ? touching(g, matrix, x, y) : immobile(g, matrix, x, y);
       	const last = matrix.length - 1;
       	const corners = [[0, 0], [last, 0], [0, last], [last, last]];
       	let occupied = 0;
@@ -505,8 +506,10 @@ function place(g) { // place down piece
       	lock(g);
       	return true;
       }
-      function drop(g) { // hard drop; hard-dropping does not invalidate a rotation spin
+      function drop(g) { // hard drop; falling any distance after a rotation invalidates the spin
+      	const y0 = g.curr.y;
       	while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) g.curr.y += 1;
+      	if (g.curr.y != y0) g.rotated = false;
       	place(g);
       }
       function rotatem(matrix, dir="cw") { // rotate matrix
