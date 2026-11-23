@@ -505,16 +505,40 @@ function place(g) { // place down piece
       	}
       	return out;
       }
-      function wellcol(rows) { // I-piece well: lowest column, ties toward the edges
-      	let best = 0;
-      	let bk = Infinity;
-      	for (let x = 0; x < bw; x++) {
+      function wellcol(rows) { // well column: edge for 9-0, split point for 6-3 and 7-2
+      	const cs = sty.split == null ? [0, bw - 1] : [...new Set([Math.round((bw - 1) * sty.split), Math.round((bw - 1) * (1 - sty.split))])];
+      	let best = cs[0];
+      	let low = Infinity;
+      	for (const x of cs) {
       		let h = 0;
       		for (let y = 0; y < bh; y++) if (rows[y] >> x & 1) {h = bh - y; break;}
-      		const k = h * 10 + Math.min(x, bw - 1 - x);
-      		if (k < bk) {bk = k; best = x;}
+      		if (h < low) {low = h; best = x;}
       	}
       	return best;
+      }
+      function solid(rows, x, y) { // wall, floor or filled cell
+      	return x < 0 || x >= bw || y >= bh || (y >= 0 && (rows[y] >> x & 1) == 1);
+      }
+      function slots(rows, well) { // spin setups: caves under an overhang and t-slots
+      	let cave = 0;
+      	let tslot = 0;
+      	for (let y = 1; y < bh; y++) {
+      		for (let x = 0; x < bw; x++) {
+      			if (x == well || solid(rows, x, y) || solid(rows, x, y - 1)) continue;
+      			const l = solid(rows, x - 1, y);
+      			const r = solid(rows, x + 1, y);
+      			if (solid(rows, x, y + 1)) {
+      				if (l != r) { // one side wall, other side open beneath an overhang
+      					const dx = l ? 1 : -1;
+      					if (solid(rows, x + dx, y - 1) && solid(rows, x + dx, y + 1)) cave += 1;
+      				}
+      			} else if (y < bh - 1 && x > 0 && x < bw - 1 && !l && !r) { // t-slot: open t shape with 3 corners filled
+      				const c = solid(rows, x - 1, y - 1) + solid(rows, x + 1, y - 1) + solid(rows, x - 1, y + 1) + solid(rows, x + 1, y + 1);
+      				if (c >= 3) tslot += 1;
+      			}
+      		}
+      	}
+      	return {cave: cave, tslot: tslot};
       }
       function evaluate(rows) { // score the scenario
       	if (bw == 4) return evaluate4(rows);
@@ -525,7 +549,6 @@ function place(g) { // place down piece
       	let peak = 0;
       	let last = null;
       	let wellh = 0;
-      	let spinsetup = 0;
       	for (let x = 0; x < bw; x++) {
       		let h = 0;
       		for (let y = 0; y < bh; y++) {
@@ -533,30 +556,21 @@ function place(g) { // place down piece
       				if (!h) h = bh - y;
       			} else if (h) holes += 1;
       		}
-      		if (x == well) {wellh = h; continue;} // the well is not part of the stack
+      		if (x == well) {wellh = h; last = null; continue;} // the well is not part of the stack; each side is shaped separately
       		total += h;
       		peak = Math.max(peak, h);
       		if (last != null) bump += Math.abs(h - last);
       		last = h;
       	}
       	const stackavg = total / Math.max(1, bw - 1);
-      	const wellpen = Math.max(0, wellh - Math.max(0, stackavg - 4)) * 1.5;
+      	const wellpen = Math.max(0, wellh - Math.max(0, stackavg - 4)) * 1.5 * sty.wellw;
       	let ready = 0; // rows full except for the well cell
       	const wmask = full & ~(1 << well);
       	for (let y = 0; y < bh; y++) {
       		if ((rows[y] & wmask) == wmask && !(rows[y] >> well & 1)) ready += 1;
       	}
-      	for (let y = 1; y < bh; y++) { // spin setups: pockets with an overhang
-      		for (let x = 0; x < bw; x++) {
-      			if (x == well || (rows[y] >> x & 1)) continue;
-      			const l = x == 0 || (rows[y] >> (x - 1) & 1);
-      			const r = x == bw - 1 || (rows[y] >> (x + 1) & 1);
-      			const up = rows[y - 1] >> x & 1;
-      			const dn = y == bh - 1 || (rows[y + 1] >> x & 1);
-      			if (dn && (l ? 1 : 0) + (r ? 1 : 0) + (up ? 1 : 0) == (setup.spinall ? 2 : 3)) spinsetup += 1;
-      		}
-      	}
-      	return holes * -7 - total * 0.2 - bump * 0.7 - Math.max(0, peak - bh / 2) * 4 - wellpen + Math.min(ready, 4) * 1.2 + Math.min(spinsetup, 3) * (setup.spinall ? 1.5 : 1);
+      	const s = slots(rows, well);
+      	return holes * -7 - total * 0.2 - bump * 0.7 - Math.max(0, peak - bh / 2) * 4 - wellpen + Math.min(ready, 4) * sty.quad + Math.min(s.cave, sty.pcap) * sty.pocket * (setup.spinall ? 1.5 : 1) + Math.min(s.tslot, 2) * sty.tslot;
       }
       function evaluate4(rows) { // 4-wide: flat, holeless stack that keeps the combo fed
       	let holes = 0;
@@ -596,7 +610,7 @@ function place(g) { // place down piece
       			const key = abs.map(([bx, by]) => by * bw + bx).sort((a, b) => a - b).join() + (spin ? "s" : "");
       			if (!done.has(key)) {
       				done.add(key);
-      				out.push({cells: abs, spin: !!spin, path: s.path});
+      				out.push({cells: abs, spin: !!spin, path: s.path, name: s.name});
       			}
       		}
       		const next = [];
@@ -630,7 +644,7 @@ function place(g) { // place down piece
       	}
       	return out;
       }
-      function child(node, done, spin, held, i, first) {
+      function child(node, done, spin, held, i, first, name) {
       	const combo = done.lines > 0 ? node.combo + 1 : 0;
       	const atk = done.lines > 0 ? power(done.lines, combo, spin) : 0;
       	let total = node.total + atk * 3 + done.lines * 2;
@@ -638,11 +652,12 @@ function place(g) { // place down piece
       	if (bw == 4) { // lookahead is spent on keeping the combo alive as long as possible
       		if (node.combo > 0 && done.lines == 0 && !broke) {broke = true; total -= 40 + node.combo * 4;}
       		if (done.lines > 0) total += 25 + combo * 2;
-      	} else if (spin && done.lines > 0) total += setup.spinall ? 6 : 4;
+      	} else if (spin && done.lines > 0) total += (name == "T" ? sty.tB : sty.aB) * (setup.spinall ? 1.5 : 1);
       	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, broke: broke, value: total + evaluate(done.rows)};
       }
       function think(g) { // decide which move is best
       	const look = levels[g.cfg.level].look;
+      	sty = styles[levels[g.cfg.level].style];
       	const seq = [g.curr.name, ...g.bag.slice(0, look + 1)];
       	const rows = g.board.map(r => r.reduce((m, c, x) => c ? m | 1 << x : m, 0));
       	const held = g.held.name || null;
@@ -655,7 +670,7 @@ function place(g) { // place down piece
       	for (const root of roots) {
       		for (const c of reach(g, root.name, root.x, root.y, root.rot)) {
       			const node = {combo: g.combo, total: -c.path.length * 0.05};
-      			beam.push(child(node, stick(rows, c.cells), c.spin, root.held, root.i, {hold: root.hold, path: c.path}));
+      			beam.push(child(node, stick(rows, c.cells), c.spin, root.held, root.i, {hold: root.hold, path: c.path}, c.name));
       		}
       	}
       	if (beam.length == 0) return ["drop"];
@@ -1137,17 +1152,24 @@ function place(g) { // place down piece
       };
       const trash = {name: "garbage", sx: 0, sy: 0, rot: 0};
       const levels = [
-      	{name: "Very Easy", look: 1, pps: 0.5},
-      	{name: "Easy", look: 1, pps: 0.8},
-      	{name: "Medium", look: 2, pps: 1},
-      	{name: "Hard", look: 2, pps: 1.5},
-      	{name: "Very Hard", look: 3, pps: 1.5},
-      	{name: "Expert", look: 3, pps: 2},
-      	{name: "Master", look: 4, pps: 2.5},
-      	{name: "Grandmaster", look: 5, pps: 3},
-      	{name: "Impossible", look: 5, pps: 4},
-      	{name: "Inhumane", look: 10, pps: 4},
+      	{name: "Very Easy", look: 0, pps: 0.5, style: "flat"},
+      	{name: "Easy", look: 1, pps: 0.8, style: "flat"},
+      	{name: "Medium", look: 2, pps: 1, style: "flat"},
+      	{name: "Hard", look: 2, pps: 1.5, style: "tspin"},
+      	{name: "Very Hard", look: 3, pps: 1.5, style: "tspin"},
+      	{name: "Expert", look: 3, pps: 2, style: "tspin"},
+      	{name: "Master", look: 4, pps: 2.5, style: "allspin"},
+      	{name: "Grandmaster", look: 5, pps: 3, style: "allspin"},
+      	{name: "Impossible", look: 10, pps: 3.5, style: "free"},
+      	{name: "Inhumane", look: 15, pps: 4, style: "free"},
       ];
+      const styles = { // cpu stacking styles (boards wider than 4)
+      	flat: {name: "9-0", split: null, quad: 1.8, wellw: 1, pocket: 0, pcap: 0, tslot: 0, aB: 2, tB: 2}, // edge well, quads, accidental spins
+      	tspin: {name: "6-3 T-spin", split: 6 / 9, quad: 1.4, wellw: 1, pocket: 0.4, pcap: 2, tslot: 1.8, aB: 4, tB: 14}, // deliberate t-spins, accidental all-spin
+      	allspin: {name: "7-2 all-spin", split: 7 / 9, quad: 1.2, wellw: 1, pocket: 1.8, pcap: 3, tslot: 0.8, aB: 10, tB: 12}, // deliberate all-spin
+      	free: {name: "6-3 freestyle", split: 6 / 9, quad: 0.8, wellw: 0.5, pocket: 2.6, pcap: 4, tslot: 1.4, aB: 16, tB: 16} // max all-spin
+      };
+      let sty = styles.flat;
       const acts = {
       	hold: g => g.hold && swap(g),
       	left: g => move(g, -1, 0),
