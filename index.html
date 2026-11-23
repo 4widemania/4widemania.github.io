@@ -1937,10 +1937,10 @@ let frameId = 0;
 		const list = gs.filter(g => g.ai && !g.dead);
 		if (list.length > 1) tuned = list[(list.indexOf(tuned) + 1) % list.length];
 		return;
-	} else if (tour && (event.key == " " || event.key == "Enter")) {
+	} else if (tour && over && (event.key == " " || event.key == "Enter")) {
 		tourAdvance();
 		return;
-	} else if (tour && (event.key == "s" || event.key == "S")) {
+	} else if (tour && !over && gs.every(g => g.ai) && (event.key == "s" || event.key == "S")) {
 		tourSkip();
 		return;
 	} else if (/^[0-9]$/.test(event.key)) {
