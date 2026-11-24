@@ -383,7 +383,7 @@ function send(g, n) { // route garbage to the other boards
       	if (g.combo > 1) sound("Acombo", pitch, ctx2.currentTime, g.vol);
       	const left = cancel(g, c);
       	if (left > 0) send(g, left);
-      	const sfx = c == 1 ? "A1lines" : c < 4 ? "A2lines" : c < 8 ? "A4lines" : c < 15 ? "A8lines" : c < 24 ? "A15lines" : "A24lines";
+      	const sfx = c < 2 ? "A1lines" : c < 4 ? "A2lines" : c < 8 ? "A4lines" : c < 15 ? "A8lines" : c < 24 ? "A15lines" : "A24lines";
       	sound(sfx + (spin ? "Spin" : ""), 1, ctx2.currentTime, g.vol);
       	if (perfect) sound("Aclear", 1, ctx2.currentTime, g.vol);
       	if (c > 0) g.pop = {n: c, perfect: perfect, born: performance.now(), ox: -100 + Math.random() * 60, oy: 0.3 + Math.random() * 0.45, rot: (Math.random() - 0.5) * 0.4, hue: Math.floor(Math.random() * 360)};
