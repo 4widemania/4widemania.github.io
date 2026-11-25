@@ -125,6 +125,7 @@
 		u: 1,
 		labelY: 0,
 		startT: 0,
+		hist: [], hint: null, hintKey: "",
 		rate: 0
       	};
       }
@@ -142,6 +143,8 @@
 	tuned = gs.find(g => g.ai) || gs[0];
 	view = p.ai ? null : p; // the board shown large
 	unrated = false;
+	unrated = bw == 4 && (setup.comboAssist || setup.trainer);
+	potCache = new Map();
 	const t0 = performance.now();
 	for (const g of gs) {g.startT = t0; g.rate = g.ai ? cpuRating(g.cfg) : 0;}
 	over = 0;
@@ -268,7 +271,7 @@ function send(g, n) { // route garbage to the other boards
 			rs.push({type: "randomize"});
 		}
 	}
-	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, {type: "boards"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
+	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, ...(setup.w == 4 ? [{type: "assist"}, {type: "trainer"}] : []), {type: "boards"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
 	return rs;
 }
       function immobile(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // immobile check
@@ -389,13 +392,160 @@ function send(g, n) { // route garbage to the other boards
       	if (c > 0) g.pop = {n: c, perfect: perfect, born: performance.now(), ox: -100 + Math.random() * 60, oy: 0.3 + Math.random() * 0.45, rot: (Math.random() - 0.5) * 0.4, hue: Math.floor(Math.random() * 360)};
       	return lines;
       }
+      function assistOn(g) { // infinite combo assist: human boards, width 4 only
+      	return !g.ai && bw == 4 && setup.comboAssist;
+      }
+      function trainOn(g) { // trainer: human boards, width 4 only
+      	return !g.ai && bw == 4 && setup.trainer;
+      }
+      function repeatBad(pre, x) { // would x make a piece 3x in a row, or a pair 3x in a row
+      	const n = pre.length;
+      	if (n >= 2 && pre[n - 1] == x && pre[n - 2] == x) return true;
+      	if (n >= 5) return x == pre[n - 2] && pre[n - 2] == pre[n - 4] && pre[n - 1] == pre[n - 3] && pre[n - 3] == pre[n - 5];
+      	return false;
+      }
+      function fixseq(g) { // repair the queue so the repeat rules hold
+      	for (let i = 0; i < Math.min(g.bag.length, 16); i++) {
+      		const pre = g.hist.concat(g.bag.slice(0, i)).slice(-6);
+      		if (!repeatBad(pre, g.bag[i])) continue;
+      		let j = -1;
+      		for (let k = i + 1; k < g.bag.length; k++) {
+      			if (!repeatBad(pre, g.bag[k])) {j = k; break;}
+      		}
+      		if (j >= 0) [g.bag[i], g.bag[j]] = [g.bag[j], g.bag[i]];
+      		else {
+      			const alt = bagp().find(n => !repeatBad(pre, n));
+      			if (alt) g.bag[i] = alt;
+      		}
+      	}
+      }
+      function rowsH(rows) { // stack height of a row-mask board
+      	const top = rows.findIndex(r => r != 0);
+      	return top < 0 ? 0 : bh - top;
+      }
+      function pot1(rows) { // how many piece types could clear a line from this board
+      	const key = rows.join(",");
+      	let v = potCache.get(key);
+      	if (v != null) return v;
+      	if (potCache.size > 60000) potCache.clear();
+      	v = 0;
+      	for (const n of bagp()) if (drops(rows, n).some(d => d.lines > 0)) v += 1;
+      	potCache.set(key, v);
+      	return v;
+      }
+      function pot2(rows) { // how many piece types clear into a board that still has plenty of continuations
+      	const key = "2:" + rows.join(",");
+      	let v = potCache.get(key);
+      	if (v != null) return v;
+      	v = 0;
+      	for (const n of bagp()) if (drops(rows, n).some(d => d.lines > 0 && pot1(d.rows) >= 3)) v += 1;
+      	potCache.set(key, v);
+      	return v;
+      }
+      function assistNext(g) { // pick the next piece with the most continuations, setups and spins allowed
+      	const rows = boardRows(g);
+      	const seen = new Map();
+      	for (const c of reach(g, g.curr.name, g.curr.x, g.curr.y, g.curr.rot, false)) {
+      		const d = stick(rows, c.cells);
+      		const k = d.rows.join(",");
+      		const old = seen.get(k);
+      		if (!old || (d.lines > 0 && !old.w)) seen.set(k, {rows: d.rows, w: d.lines > 0});
+      	}
+      	let boards = [...seen.values()];
+      	if (g.combo > 0 && boards.some(o => o.w)) boards = boards.filter(o => o.w); // keep the combo alive
+      	const pre = g.hist.slice(-6);
+      	const pool = [...new Set(bagp())].filter(n => !repeatBad(pre, n));
+      	if (boards.length && pool.length) {
+      		let best = null;
+      		let bs = -Infinity;
+      		for (const n of pool) {
+      			let top = -Infinity;
+      			let cov = 0;
+      			for (const o of boards) {
+      				let m = -Infinity;
+      				for (const d of drops(o.rows, n)) {
+      					if (d.lines <= 0) continue;
+      					const p1 = pot1(d.rows);
+      					m = Math.max(m, p1 * 2 + pot2(d.rows) - (p1 == 0 ? 15 : 0));
+      				}
+      				if (m > -Infinity) {cov += 1; top = Math.max(top, (o.w ? 20 : 0) + 10 + m);}
+      			}
+      			if (!cov) continue;
+      			const sc = top + 10 * cov / boards.length + Math.random() * 3;
+      			if (sc > bs) {bs = sc; best = n;}
+      		}
+      		if (best && best != g.bag[0]) {
+      			const j = g.bag.indexOf(best, 1);
+      			if (j > 0) g.bag[j] = g.bag[0];
+      			g.bag[0] = best;
+      		}
+      	}
+      	fixseq(g);
+      }
+      function trainQ(rows) { // end-of-line quality: fewer holes and a lower stack
+      	let holes = 0;
+      	let total = 0;
+      	for (let x = 0; x < bw; x++) {
+      		let h = 0;
+      		for (let y = 0; y < bh; y++) {
+      			if (rows[y] >> x & 1) {
+      				if (!h) h = bh - y;
+      			} else if (h) holes += 1;
+      		}
+      		total += h;
+      	}
+      	return -(holes * 10 + total);
+      }
+      function trainHint(g) { // best plan from the full move search: spins, slides and hold included
+      	const rows = boardRows(g);
+      	const look = setup.comboAssist ? 1 : 10; // with assist on, pieces past the next one aren't fixed yet
+      	const key = rows.join(",") + "|" + g.curr.name + "|" + (g.held.name || "-") + (g.hold ? 1 : 0) + "|" + g.bag.slice(0, look + 1).join("") + "|" + g.combo;
+      	if (g.hintKey == key) return g.hint;
+      	g.hintKey = key;
+      	g.hint = null;
+      	const keep = sty;
+      	think(g, {look: look, style: "free"});
+      	sty = keep;
+      	if (lastBest && lastBest.cells) g.hint = {cells: lastBest.cells, hold: !!lastBest.hold};
+      	return g.hint;
+      }
+      function drawhint(g) { // outline only, no fill
+      	const h = trainHint(g);
+      	if (!h) return;
+      	const cs = h.cells;
+      	const set = new Set(cs.map(([x, y]) => x + "," + y));
+      	const s = g.size;
+      	ctx.save();
+      	ctx.strokeStyle = "#33ffee";
+      	ctx.lineWidth = Math.max(2, s * 0.12);
+      	ctx.lineCap = "round";
+      	ctx.beginPath();
+      	for (const [x, y] of cs) {
+      		const px = g.left + x * s;
+      		const py = g.top + y * s;
+      		if (!set.has(x + "," + (y - 1))) {ctx.moveTo(px, py); ctx.lineTo(px + s, py);}
+      		if (!set.has(x + "," + (y + 1))) {ctx.moveTo(px, py + s); ctx.lineTo(px + s, py + s);}
+      		if (!set.has((x - 1) + "," + y)) {ctx.moveTo(px, py); ctx.lineTo(px, py + s);}
+      		if (!set.has((x + 1) + "," + y)) {ctx.moveTo(px + s, py); ctx.lineTo(px + s, py + s);}
+      	}
+      	ctx.stroke();
+      	if (h.hold) {
+      		ctx.fillStyle = "#33ffee";
+      		ctx.font = `bold ${Math.max(10, Math.round(s * 0.7))}px Kanchenjunga`;
+      		ctx.textAlign = "center";
+      		ctx.fillText("HOLD, then place here", g.left + bw * s / 2, g.top - s * 0.3);
+      	}
+      	ctx.restore();
+      }
       function spawn(g) { // spawn next piece
       	bagf(g.bag);
       	g.rotated = false;
       	const next = g.bag.shift();
+      	if (!g.ai) {g.hist.push(next); if (g.hist.length > 8) g.hist.shift();}
       	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: spawny, rot: 0};
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
       	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g) || stuck(g)) g.dead = true; // top out
+      	else if (assistOn(g)) assistNext(g);
       }
       function lock(g) { // lock piece
       	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) {
@@ -778,7 +928,7 @@ function place(g) { // place down piece
       		if (c == 3) feed += 1;
       	}
       	const survival = pressure * (-(holes * 12) - total * 1.1);
-      	return holes * -7 - total * 0.15 + Math.min(feed, 6) * 0.8 + setupPotential(rows, nextName) + survival;
+      	return holes * -7 - total * 0.15 + Math.min(feed, 6) * 0.8 + pot1(rows) * 3 + pot2(rows) * 4 + setupPotential(rows, nextName) + survival;
       }
       function reach(g, name, x, y, rot, trackPath=true) {
       	const out = [];
@@ -866,13 +1016,13 @@ function place(g) { // place down piece
       	else if (spin) total += (name == "T" ? sty.tB : sty.aB) * (done.lines > 0 ? 1 : 0.28);
       	return {rows: done.rows, combo: combo, total: total, held: held, i: i, first: first || node.first, broke: broke, value: total + evaluate(done.rows, nextName)};
       }
-      function think(g) { // decide which move is best
+      function think(g, opt) { // decide which move is best
       	setupCache = new Map();
-      	const look = levels[g.cfg.level].look;
+      	const look = opt && opt.look != null ? opt.look : levels[g.cfg.level].look;
       	// A modestly wider beam helps deep levels retain alternate spin setups.
       	// Deduplication below keeps this from multiplying the search cost blindly.
-      	const beamWidth = Math.min(5, Math.max(4, 3 + Math.ceil(look / 5)));
-      	sty = styles[levels[g.cfg.level].style];
+      	const beamWidth = bw == 4 ? 8 : Math.min(5, Math.max(4, 3 + Math.ceil(look / 5)));
+      	sty = styles[opt && opt.style ? opt.style : levels[g.cfg.level].style];
       	const seq = [g.curr.name, ...g.bag.slice(0, look + 1)];
       	const rows = g.board.map(r => r.reduce((m, c, x) => c ? m | 1 << x : m, 0));
       	const held = g.held.name || null;
@@ -885,9 +1035,10 @@ function place(g) { // place down piece
       	for (const root of roots) {
       		for (const c of reach(g, root.name, root.x, root.y, root.rot)) {
       			const node = {rows: rows, combo: g.combo, total: -c.path.length * 0.05};
-      			beam.push(child(node, stick(rows, c.cells), c.spin, root.held, root.i, {hold: root.hold, path: c.path}, c.name, seq[root.i]));
+      			beam.push(child(node, stick(rows, c.cells), c.spin, root.held, root.i, {hold: root.hold, path: c.path, cells: c.cells, name: c.name}, c.name, seq[root.i]));
       		}
       	}
+      	lastBest = null;
       	if (beam.length == 0) return ["drop"];
       	function prune(nodes) {
       		const best = new Map();
@@ -928,6 +1079,7 @@ function place(g) { // place down piece
       		beam = prune(next);
       	}
       	const best = beam[0].first;
+      	lastBest = best;
       	return [...(best.hold ? ["hold"] : []), ...best.path, "drop"];
       }
       function cpu(g, time) { // ai play
@@ -1168,6 +1320,7 @@ function place(g) { // place down piece
 			if (gdy > 0) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y + gdy, g.curr.name, g.curr.rot);
 			ctx.globalAlpha = 1;
 		}
+		if (trainOn(g) && !g.dead && !over) drawhint(g);
 		const incoming = Math.min(g.pending.reduce((a, c) => a + c.n, 0), bh);
 		ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
 		ctx.fillRect(g.left - 8 * u, g.top + brh - incoming * g.size, 6 * u, incoming * g.size);
@@ -1244,6 +1397,8 @@ function place(g) { // place down piece
 		else if (row.type == "width") text = `Board width:  < ${setup.w} >`;
 		else if (row.type == "height") text = `Board height:  < ${setup.h} >`;
 		else if (row.type == "spin") text = `Everything is a spin:  < ${setup.spinall ? "on" : "off"} >`;
+		else if (row.type == "assist") text = `Infinite combo assist:  < ${setup.comboAssist ? "on" : "off"} >`;
+		else if (row.type == "trainer") text = `Trainer:  < ${setup.trainer ? "on" : "off"} >`;
 		else if (row.type == "boards") text = `Force all boards visible:  < ${setup.forceAllBoards ? "on" : "off"} >`;
 		else if (row.type == "controls") text = "Settings  >";
 		if (i == sel) {
@@ -1649,6 +1804,8 @@ function render(time) { // render board
       };
       let sty = styles.flat;
       let setupCache = new Map();
+      let potCache = new Map();
+      let lastBest = null;
       const acts = {
       	hold: g => g.hold && swap(g),
       	left: g => move(g, -1, 0),
@@ -1668,7 +1825,7 @@ function render(time) { // render board
 	{id: "brawl", name: "CPU brawl", human: false, min: 2, max: 8, label: "CPUs"},
 	{id: "tourney", name: "Tournament", human: false, min: 2, max: 64, label: "CPUs"}
 ];
-const setup = {mode: 0, target: "even", counts: {arena: 3, brawl: 4, tourney: 16}, w: bw, h: bh, spinall: false, forceAllBoards: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: Array.from({length: 8}, () => ({level: 0, pps: levels[0].pps}))};
+const setup = {mode: 0, target: "even", counts: {arena: 3, brawl: 4, tourney: 16}, w: bw, h: bh, spinall: false, forceAllBoards: false, comboAssist: false, trainer: false, pieces: Object.fromEntries(names.map(n => [n, true])), cpus: Array.from({length: 8}, () => ({level: 0, pps: levels[0].pps}))};
 let gs = []; // every board in play
 let tour = null; // tournament state
 let thinkFrame = -1;
@@ -1906,6 +2063,8 @@ let frameId = 0;
 			else if (row.type == "width") setup.w = Math.min(20, Math.max(4, setup.w + d * (event.shiftKey ? 5 : 1)));
 			else if (row.type == "height") setup.h = Math.min(40, Math.max(8, setup.h + d * (event.shiftKey ? 5 : 1)));
 			else if (row.type == "spin") setup.spinall = !setup.spinall;
+			else if (row.type == "assist") setup.comboAssist = !setup.comboAssist;
+			else if (row.type == "trainer") setup.trainer = !setup.trainer;
 			else if (row.type == "boards") setup.forceAllBoards = !setup.forceAllBoards;
 			else if (row.type == "pieces") bagc = (bagc + d + names.length) % names.length;
 		} else if (/^[0-9]$/.test(key) && (row.type == "skill" || row.type == "cpu")) {
