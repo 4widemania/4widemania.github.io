@@ -51,7 +51,7 @@
       		const gain = ctx2.createGain();
       		source.buffer = buffer;
       		source.playbackRate.value = rate;
-      		gain.gain.value = vol;
+      		gain.gain.value = 0.5*vol;
       		source.connect(gain);
       		gain.connect(ctx2.destination);
       		source.start(Math.max(when, ctx2.currentTime));
@@ -76,7 +76,7 @@
 				const gain = ctx2.createGain();
 				source.buffer = sounds.Amusic;
 				source.loop = true;
-				gain.gain.value = 0.67;
+				gain.gain.value = 1;
 				source.connect(gain);
 				gain.connect(ctx2.destination);
 				source.start();
