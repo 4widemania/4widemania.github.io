@@ -1774,9 +1774,8 @@ function render(time) { // render board
       	{name: "Impossible", look: 10, pps: 3.5, style: "free"},
       	{name: "Inhumane", look: 15, pps: 4, style: "free"},
       ];
-      const levelMistake = [0.45, 0.35, 0.25, 0.14, 0.08, 0.04, 0.02, 0.008, 0, 0]; // chance per piece of a natural mistake; none at Impossible/Inhumane
+      const levelMistake = [0.2, 0.15, 0.1, 0.08, 0.06, 0.04, 0.02, 0.008, 0, 0]; // chance per piece of a natural mistake; none at Impossible/Inhumane
       const levelRatings = [100, 200, 400, 700, 900, 1200, 1600, 2000, 2500, 3000]; // rating of each cpu level
-      const ranks = ["D", "C", "B", "A-", "A", "A+", "S-", "S", "S+", "SS"];
       let rating = 0;
       let ratedGames = 0;
       let ratingDelta = 0;
@@ -1797,9 +1796,31 @@ function render(time) { // render board
       	} catch (e) {}
       }
       function rankOf(r) { // rank letter for a rating
-      	let k = 0;
-      	for (let i = 0; i < levelRatings.length; i++) if (r >= levelRatings[i]) k = i;
-      	return ranks[k];
+		const ranks = {
+			"F": 0,
+			"D-": 25,
+			"D": 50,
+			"D+": 75,
+			"C-": 100,
+			"C": 150,
+			"C+": 200,
+			"B-": 250,
+			"B": 300,
+			"B+": 400,
+			"A-": 500,
+			"A": 700,
+			"A+": 900,
+			"S-": 1200,
+			"S": 1500,
+			"S+": 1800,
+			"SS": 2100,
+			"U": 2500,
+			"X": 3000,
+			"X+": 3500
+		};
+      	let k = "F";
+      	for (let [rank, rating] of Object.entries(ranks)) if (r >= rating) k = rank;
+      	return k;
       }
       function cpuRating(cfg) { // a cpu's rating: its level, nudged by a custom speed
       	const ratio = cfg.pps / levels[cfg.level].pps;
@@ -1835,7 +1856,30 @@ function render(time) { // render board
       function updateRatingBox() { // top left rank and rating
       	const box = document.getElementById("ratingbox");
       	if (!box) return;
-      	let t = `<span class="rk">${rankOf(rating)}</span>${Math.round(rating)}`;
+		let rk = rankOf(rating);
+		let colors = {
+			"F": "#755970",
+			"D-": "#79547b",
+			"D": "#75528d",
+			"D+": "#734e9c",
+			"C-": "#6f4bac",
+			"C": "#6947bc",
+			"C+": "#5c46ce",
+			"B-": "#4a45df",
+			"B": "#3244ee",
+			"B+": "#0342fc",
+			"A-": "#007763",
+			"A": "#007950",
+			"A+": "#007c1c",
+			"S-": "#bfdf06",
+			"S": "#eacf00",
+			"S+": "#ffc100",
+			"SS": "#ffa500",
+			"U": "#ff7f46",
+			"X": "#ff6051",
+			"X+": "#f75267"
+		};
+      	let t = `<span class="rk" style="color: ${colors[rk]}">${rk}</span>${Math.round(rating)}`;
       	if (ratingDelta != 0 && performance.now() - ratingDeltaAt < 8000) t += ` <span style="color:${ratingDelta > 0 ? "#66ff88" : "#ff7777"}">${ratingDelta > 0 ? "+" : ""}${ratingDelta}</span>`;
       	if (screen == "play" && unrated && p && !p.ai) t += ` <span style="font-size:14px">(unrated)</span>`;
       	if (t != ratingText) {box.innerHTML = t; ratingText = t;}
