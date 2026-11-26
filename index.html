@@ -63,73 +63,102 @@
       	}
       	return play();
       }
-      (async () => {await Promise.all([ // preload sounds
-      	load("A1lines", "4_1LINES.mp3"),
-      	load("A2lines", "4_2LINES.mp3"),
-      	load("A4lines", "4_4LINES.mp3"),
-      	load("A8lines", "4_8LINES.mp3"),
-      	load("A15lines", "4_15LINES.mp3"),
-      	load("A24lines", "4_24LINES.mp3"),
-      	load("A1linesSpin", "4_1LINES_SPIN.mp3"),
-      	load("A2linesSpin", "4_2LINES_SPIN.mp3"),
-      	load("A4linesSpin", "4_4LINES_SPIN.mp3"),
-      	load("A8linesSpin", "4_8LINES_SPIN.mp3"),
-      	load("A15linesSpin", "4_15LINES_SPIN.mp3"),
-      	load("A24linesSpin", "4_24LINES_SPIN.mp3"),
-      	load("Aplace", "4_place.wav"),
-      	load("Acombo", "4_combo.wav"),
-      	load("Aclear", "4_clear.mp3"),
-      	load("Awin", "4_win.mp3"),
-      	load("Alose", "4_lose.mp3"),
-      	load("Adie", "4_die.mp3")
-      ])})();
-      function aic(bot) { // create game
-      	return {
-      		ai: bot,
-      		vol: bot ? 0.5 : 1,
-      		board: Array.from({length: bh}, () => Array(bw).fill(null)),
-      		curr: {},
-      		held: {},
-      		bag: bagf([]),
-      		hold: true,
-      		lockat: 0,
-      		resets: 15,
-      		combo: 0,
-      		pcsave: false,
-      		surge: 0,
-      		sent: 0,
-      		grace: 0,
-      		last: 0,
-      		rotated: false,
-      		dead: false,
-      		pending: [],
-      		foe: null,
-      		cfg: null,
-      		plan: null,
-      		born: 0,
-      		next: 0,
-      		step: 0,
-      		left: 0,
-      		top: 0,
-      		size: 0,
-      		by: 0,
-      		shake: 0,
-      		fx: [],
-      		fxt: 0,
-      		pop: null,
-		name: "",
-		ent: null,
-		diedAt: 0,
-		place: 0,
-		tilt: 1,
-		u: 1,
-		labelY: 0,
-		startT: 0,
-		hist: [], hint: null, hintKey: "",
-		rate: 0
-      	};
-      }
-      function setgames(defs) { // create the boards for a round
+	  let musicSource = null;
+		let musicPending = false;
+		function startMusic() {
+			if (musicSource || musicPending || over || screen != "play") return;
+			if (!sounds.matchMusic) return;
+			musicPending = true;
+			const play = () => {
+				musicPending = false;
+				if (musicSource || over || screen != "play") return;
+				const source = ctx2.createBufferSource();
+				const gain = ctx2.createGain();
+				source.buffer = sounds.matchMusic;
+				source.loop = true;
+				gain.gain.value = 0.67;
+				source.connect(gain);
+				gain.connect(ctx2.destination);
+				source.start();
+				musicSource = source;
+			};
+			if (ctx2.state != "running") ctx2.resume().then(play);
+			else play();
+		}
+		function stopMusic() {
+			if (!musicSource) return;
+			musicSource.stop();
+			musicSource.disconnect();
+			musicSource = null;
+		}
+		(async () => {await Promise.all([ // preload sounds
+			load("A1lines", "4_1LINES.mp3"),
+			load("A2lines", "4_2LINES.mp3"),
+			load("A4lines", "4_4LINES.mp3"),
+			load("A8lines", "4_8LINES.mp3"),
+			load("A15lines", "4_15LINES.mp3"),
+			load("A24lines", "4_24LINES.mp3"),
+			load("A1linesSpin", "4_1LINES_SPIN.mp3"),
+			load("A2linesSpin", "4_2LINES_SPIN.mp3"),
+			load("A4linesSpin", "4_4LINES_SPIN.mp3"),
+			load("A8linesSpin", "4_8LINES_SPIN.mp3"),
+			load("A15linesSpin", "4_15LINES_SPIN.mp3"),
+			load("A24linesSpin", "4_24LINES_SPIN.mp3"),
+			load("Aplace", "4_place.wav"),
+			load("Acombo", "4_combo.wav"),
+			load("Aclear", "4_clear.mp3"),
+			load("Awin", "4_win.mp3"),
+			load("Alose", "4_lose.mp3"),
+			load("Adie", "4_die.mp3"),
+			load("Amusic", "4_music.mp3")
+    ])})();
+		function aic(bot) { // create game
+			return {
+				ai: bot,
+				vol: bot ? 0.5 : 1,
+				board: Array.from({length: bh}, () => Array(bw).fill(null)),
+				curr: {},
+				held: {},
+				bag: bagf([]),
+				hold: true,
+				lockat: 0,
+				resets: 15,
+				combo: 0,
+				pcsave: false,
+				surge: 0,
+				sent: 0,
+				grace: 0,
+				last: 0,
+				rotated: false,
+				dead: false,
+				pending: [],
+				foe: null,
+				cfg: null,
+				plan: null,
+				born: 0,
+				next: 0,
+				step: 0,
+				left: 0,
+				top: 0,
+				size: 0,
+				by: 0,
+				shake: 0,
+				fx: [],
+				fxt: 0,
+				pop: null,
+				name: "",
+				ent: null,
+				diedAt: 0,
+				place: 0,
+				tilt: 1,
+				u: 1,
+				labelY: 0,
+				startT: 0,
+				hist: [], hint: null, hintKey: "",
+				rate: 0
+			};
+		}
+function setgames(defs) { // create the boards for a round
 	const nc = defs.filter(d => d.cfg).length;
 	gs = defs.map(d => {
 		const g = aic(!!d.cfg);
@@ -1049,6 +1078,7 @@ function place(g) { // place down piece
       		}
       		return [...best.values()].sort((a, b) => b.value - a.value).slice(0, beamWidth);
       	}
+      	const rootCands = beam.slice(); // every first-move option, for natural mistakes
       	beam = prune(beam);
       	// Future pieces use the same reachable-move search as the current piece.
       	// Cache by board + piece so deep lookahead does not repeatedly BFS identical states.
@@ -1078,9 +1108,21 @@ function place(g) { // place down piece
       		if (next.length == 0) break;
       		beam = prune(next);
       	}
-      	const best = beam[0].first;
+      	let best = beam[0].first;
+      	const slipRate = opt ? 0 : (levelMistake[g.cfg.level] || 0); // trainer hints (opt) are never flawed
+      	if (slipRate > 0 && Math.random() < slipRate) {
+      		// misjudgement: pick a decent but not best placement; easier levels choose from a wider, sloppier pool
+      		const pool = rootCands.filter(n => n.first !== best).sort((x, y) => y.value - x.value);
+      		const span = Math.min(pool.length, 2 + Math.round(slipRate * 20));
+      		if (span > 0) best = pool[Math.floor(Math.pow(Math.random(), 2) * span)].first;
+      	}
       	lastBest = best;
-      	return [...(best.hold ? ["hold"] : []), ...best.path, "drop"];
+      	const out = [...(best.hold ? ["hold"] : []), ...best.path, "drop"];
+      	if (slipRate > 0 && Math.random() < slipRate * 0.4) {
+      		// fumble: one stray sideways input just before the drop, so the piece lands a column off
+      		out.splice(out.length - 1, 0, Math.random() < 0.5 ? "left" : "right");
+      	}
+      	return out;
       }
       function cpu(g, time) { // ai play
       	if (g.dead || !g.curr.name) return;
@@ -1730,6 +1772,7 @@ function render(time) { // render board
       	{name: "Impossible", look: 10, pps: 3.5, style: "free"},
       	{name: "Inhumane", look: 15, pps: 4, style: "free"},
       ];
+      const levelMistake = [0.45, 0.35, 0.25, 0.14, 0.08, 0.04, 0.02, 0.008, 0, 0]; // chance per piece of a natural mistake; none at Impossible/Inhumane
       const levelRatings = [100, 200, 400, 700, 900, 1200, 1600, 2000, 2500, 3000]; // rating of each cpu level
       const ranks = ["D", "C", "B", "A-", "A", "A+", "S-", "S", "S+", "SS"];
       let rating = 0;
