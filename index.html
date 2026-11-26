@@ -74,7 +74,7 @@
 				if (musicSource || over || screen != "play") return;
 				const source = ctx2.createBufferSource();
 				const gain = ctx2.createGain();
-				source.buffer = sounds.matchMusic;
+				source.buffer = sounds.Amusic;
 				source.loop = true;
 				gain.gain.value = 0.67;
 				source.connect(gain);
@@ -179,6 +179,7 @@ function setgames(defs) { // create the boards for a round
 	over = 0;
 	inp = newinp();
 	for (const g of gs) spawn(g);
+	startMusic();
 }
 function start() { // start game
 	bw = setup.w;
@@ -1614,6 +1615,7 @@ function render(time) { // render board
 		}
 		if (alive.length <= 1) { // round just ended
 			over = performance.now();
+			stopMusic();
 			if (alive.length == 1) alive[0].place = 1;
 			rateRound();
 			const lose = p.ai ? alive.length == 0 : p.dead;
