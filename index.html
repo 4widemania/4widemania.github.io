@@ -280,6 +280,23 @@ function recv(o, n, hole) { // a board receives garbage: it shakes now, while th
 	hit(o, n);
 	o.inAt = performance.now();
 }
+const MERCY_AFTER = 120000; // mercy rule only kicks in once the match is this old (ms)
+const MERCY_RATIO = 5; // lose when garbage piled up >= this many times what you've sent
+const MERCY_MIN = 10; // ...and at least this many lines, so a board that sent 0 isn't killed by a couple of lines
+function piled(g) { // garbage stuck on you: pending + garbage rows already on the board
+	let n = 0;
+	for (const c of g.pending) n += c.n;
+	for (const r of g.board) if (r.some(c => c === trash)) n += 1;
+	return n;
+}
+function mercyCheck(g, now) { // too much garbage to ever recover from: automatic loss
+	if (g.dead || now - g.startT < MERCY_AFTER) return;
+	if (piled(g) < Math.max(MERCY_MIN, MERCY_RATIO * g.sent)) return;
+	g.dead = true;
+	g.mercy = true;
+	g.pop = {n: 0, mercy: true, perfect: false, born: now, ox: 0, oy: 0.4, rot: (Math.random() - 0.5) * 0.3, hue: 0, acc: 0};
+	popBurst(g, g.pop, 20, false);
+}
 function send(g, n) { // route garbage to the other boards
 	const fs = gs.filter(o => o !== g && !o.dead);
 	if (fs.length == 0) return;
@@ -1415,12 +1432,12 @@ function place(g) { // place down piece
       	const q = g.pop;
       	if (!q) return;
       	const t = performance.now() - q.born;
-      	const life = 1000;
+      	const life = q.mercy ? 1800 : 1000;
       	if (t > life) {g.pop = null; return;}
       	const grow = Math.max(0.001, easeOutElastic(A.on ? t * A.speed / 520 : 1)); // springs past full size, then settles
       	const fade = t < 500 ? 1 : 1 - easeInOutCubic((t - 500) / 500);
-      	const fs = Math.min(64, 26 + q.n * 2.5) * Math.min(1.4, g.size / 24 + 0.4);
-      	const x = g.left + q.ox * (g.u || 1);
+      	const fs = (q.mercy ? 44 : Math.min(64, 26 + q.n * 2.5)) * Math.min(1.4, g.size / 24 + 0.4);
+      	const x = q.mercy ? g.left + bw * g.size / 2 : g.left + q.ox * (g.u || 1); // MERCY is centered on the board
       	const y = g.top + brh * q.oy - easeOutCubic(t / life) * 26 * (A.on ? 1 : 0) * (g.u || 1); // drifts upward as it fades
       	if (t < 420) { // keep the confetti coming, in whatever color the text is right now
       		q.acc += g.fdt * (45 + q.n * 4);
@@ -1441,9 +1458,10 @@ function place(g) { // place down piece
       	ctx.font = `bold ${fs}px Kanchenjunga`;
       	ctx.lineWidth = 5;
       	ctx.strokeStyle = "#1a0050";
-      	ctx.strokeText(`+${q.n}`, 0, 0);
-      	ctx.fillStyle = popFill(q, t);
-      	ctx.fillText(`+${q.n}`, 0, 0);
+      	const label = q.mercy ? "MERCY!!!" : `+${q.n}`;
+      	ctx.strokeText(label, 0, 0);
+      	ctx.fillStyle = q.mercy ? `hsl(${(350 + Math.sin(t / 60) * 10)}, 100%, ${Math.floor(t / 70) % 2 ? 70 : 55}%)` : popFill(q, t);
+      	ctx.fillText(label, 0, 0);
       	if (q.perfect) {
       		ctx.font = `bold ${Math.max(12, fs * 0.38)}px Kanchenjunga`;
       		ctx.strokeText("PERFECT CLEAR", 0, fs * 0.5);
@@ -1790,6 +1808,7 @@ function render(time) { // render board
 			if (g.ai) cpu(g, time);
 			else {inputstep(performance.now()); tick(g, time);}
 		}
+		for (const g of gs) mercyCheck(g, performance.now());
 		const alive = gs.filter(g => !g.dead);
 		for (const g of gs) {
 			if (g.dead && !g.diedAt) {
@@ -1830,6 +1849,17 @@ function render(time) { // render board
 		}
 	} else {
 		for (const g of gs) draw(g);
+	}
+	{ // match stopwatch, top left; freezes when the round ends
+		const el = Math.max(0, ((over || performance.now()) - gs[0].startT) / 1000);
+		const mm = Math.floor(el / 60);
+		const ss = el - mm * 60;
+		ctx.save();
+		ctx.textAlign = "left";
+		ctx.font = "bold 22px Kanchenjunga";
+		ctx.fillStyle = el * 1000 >= MERCY_AFTER ? "#ffb0b0" : "#bdb7ff"; // tinted once mercy rule is live
+		ctx.fillText(`${mm}:${ss < 10 ? "0" : ""}${ss.toFixed(1)}`, 14, 26);
+		ctx.restore();
 	}
 	ctx.textAlign = "center";
 	ctx.fillStyle = "#bdb7ff";
@@ -2046,6 +2076,7 @@ function render(time) { // render board
       	ctx.globalAlpha = 1;
       }
       function popFill(q, t) { // the +N text's fill color at time t (confetti copies it)
+      	if (q.mercy) return `hsl(${350 + Math.sin(t / 60) * 10}, 100%, ${Math.floor(t / 70) % 2 ? 70 : 55}%)`;
       	return `hsl(${(q.hue + t * 0.6) % 360}, 100%, ${Math.floor(t / 70) % 2 ? 85 : 65}%)`;
       }
       function popBurst(g, q, c, perfect) { // opening confetti burst for a +N text
