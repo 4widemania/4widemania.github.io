@@ -28,6 +28,17 @@
         width: 100%;
         height: 100%;
       }
+          #ratingbox .delta {
+        display: inline-block;
+        transform-origin: left center;
+        animation: deltaPop 0.7s cubic-bezier(0.2, 0.9, 0.3, 1.2) both;
+      }
+      @keyframes deltaPop {
+        0% {transform: scale(0.2) translateY(10px); opacity: 0;}
+        35% {transform: scale(1.7) translateY(-4px); opacity: 1;}
+        65% {transform: scale(0.92) translateY(0);}
+        100% {transform: scale(1) translateY(0);}
+      }
     </style>
   </head>
   <body>
@@ -143,6 +154,10 @@
 				size: 0,
 				by: 0,
 				shake: 0,
+				rot: 0, rotv: 0, rotDir: 1, rotAng: 0, rotAt: 0, dispIn: 0, dispRed: 0, inAt: 0,
+				hud: {t: [0, 0, 0], d: [0, 0, 0], at: [0, 0, 0]}, qAt: 0, holdAt: 0, holdA: 1, spawnAt: 0,
+				vc: null, vx: 0, vy: 0, lc: [], lcAt: 0, trail: null, fl: [], fade: 1, fdt: 0.016,
+				planShaken: false, lateRolled: false,
 				fx: [],
 				fxt: 0,
 				pop: null,
@@ -171,6 +186,8 @@ function setgames(defs) { // create the boards for a round
 	p = gs.find(g => !g.ai) || gs[0];
 	tuned = gs.find(g => g.ai) || gs[0];
 	view = p.ai ? null : p; // the board shown large
+	confetti = [];
+	celebrateFor = 0;
 	unrated = false;
 	unrated = bw == 4 && (setup.comboAssist || setup.trainer);
 	potCache = new Map();
@@ -258,6 +275,11 @@ function stackh(g) { // height of a board's stack
 	const top = g.board.findIndex(r => r.some(c => c != null));
 	return top < 0 ? 0 : bh - top;
 }
+function recv(o, n, hole) { // a board receives garbage: it shakes now, while the garbage is still pending
+	o.pending.push({n: n, hole: hole});
+	hit(o, n);
+	o.inAt = performance.now();
+}
 function send(g, n) { // route garbage to the other boards
 	const fs = gs.filter(o => o !== g && !o.dead);
 	if (fs.length == 0) return;
@@ -270,14 +292,14 @@ function send(g, n) { // route garbage to the other boards
 			if (h > hi) {hi = h; best = [o];}
 			else if (h == hi) best.push(o);
 		}
-		best[Math.floor(Math.random() * best.length)].pending.push({n: n, hole: hole()});
+		recv(best[Math.floor(Math.random() * best.length)], n, hole());
 		return;
 	}
 	const each = Math.floor(n / fs.length); // spread evenly, leftovers go to random boards
 	const extra = n % fs.length;
 	shuffle(fs.slice()).forEach((o, i) => {
 		const k = each + (i < extra ? 1 : 0);
-		if (k > 0) o.pending.push({n: k, hole: hole()});
+		if (k > 0) recv(o, k, hole());
 	});
 }
       function setlevel(cfg, i) { // set ai level
@@ -301,7 +323,7 @@ function send(g, n) { // route garbage to the other boards
 			rs.push({type: "randomize"});
 		}
 	}
-	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, ...(setup.w == 4 ? [{type: "assist"}, {type: "trainer"}] : []), {type: "boards"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
+	rs.push({type: "width"}, {type: "height"}, {type: "spin"}, ...(setup.w == 4 ? [{type: "assist"}, {type: "trainer"}] : []), {type: "boards"}, {type: "anim"}, {type: "pieces"}, {type: "controls"}, {type: "start"});
 	return rs;
 }
       function immobile(g, matrix=g.curr.matrix, x=g.curr.x, y=g.curr.y) { // immobile check
@@ -380,7 +402,7 @@ function send(g, n) { // route garbage to the other boards
       		n += take;
       		if (chunk.n == 0) g.pending.shift();
       	}
-      	if (n > 0) hit(g, n);
+      	if (n > 0) for (const c of g.lc) c.y -= n; // no shake here: the board already shook when the garbage arrived
       }
       function clear(g, spin) { // clear lines
       	let c = 0;
@@ -419,7 +441,7 @@ function send(g, n) { // route garbage to the other boards
       	const sfx = c < 2 ? "A1lines" : c < 4 ? "A2lines" : c < 8 ? "A4lines" : c < 15 ? "A8lines" : c < 24 ? "A15lines" : "A24lines";
       	sound(sfx + (spin ? "Spin" : ""), 1, ctx2.currentTime, g.vol);
       	if (perfect) sound("Aclear", 1, ctx2.currentTime, g.vol);
-      	if (c > 0) g.pop = {n: c, perfect: perfect, born: performance.now(), ox: -100 + Math.random() * 60, oy: 0.3 + Math.random() * 0.45, rot: (Math.random() - 0.5) * 0.4, hue: Math.floor(Math.random() * 360)};
+      	if (c > 0) g.pop = {n: c, perfect: perfect, born: performance.now(), ox: -100 + Math.random() * 60, oy: 0.3 + Math.random() * 0.45, rot: (Math.random() - 0.5) * 0.4, hue: Math.floor(Math.random() * 360), acc: 0}; if (c > 0) popBurst(g, g.pop, c, perfect);
       	return lines;
       }
       function assistOn(g) { // infinite combo assist: human boards, width 4 only
@@ -571,6 +593,9 @@ function send(g, n) { // route garbage to the other boards
       	bagf(g.bag);
       	g.rotated = false;
       	const next = g.bag.shift();
+      	g.qAt = performance.now();
+      	g.spawnAt = g.qAt;
+      	g.rotAng = 0;
       	if (!g.ai) {g.hist.push(next); if (g.hist.length > 8) g.hist.shift();}
       	g.curr = {name: next, matrix: pieces[next], source: pieces[next].map((r, y) => r.map((_, x) => ({sx: x * 20, sy: y * 20}))), x: spawnx, y: spawny, rot: 0};
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
@@ -603,6 +628,9 @@ function send(g, n) { // route garbage to the other boards
       	}
       	reset(g.held);
       	g.hold = false;
+      	g.holdAt = performance.now();
+      	g.spawnAt = g.holdAt;
+      	g.rotAng = 0;
       	if (g.resets > 0) {g.lockat = 0; g.resets -= 1;}
       	if (collision(g, g.curr.matrix, g.curr.x, g.curr.y) || touching(g) || stuck(g)) g.dead = true; // top out
       }
@@ -650,6 +678,7 @@ function lost(g) { // can't continue the combo and garbage tops you out wherever
 function place(g) { // place down piece
       	if (Date.now() < g.grace) return;
       	const spin = spinCheck(g, g.curr.name, g.curr.matrix, g.curr.x, g.curr.y, g.rotated);
+      	const cells = [];
       	for (let row = 0; row < g.curr.matrix.length; row++) {
       		for (let col = 0; col < g.curr.matrix[row].length; col++) {
       			if (!g.curr.matrix[row][col]) continue;
@@ -661,7 +690,14 @@ function place(g) { // place down piece
       			}
       			const source = g.curr.source[row][col];
       			g.board[by][bx] = {name: g.curr.name, sx: source.sx, sy: source.sy, q: source.q, rot: g.curr.rot};
+      			cells.push({x: bx, y: by});
       		}
+      	}
+      	g.lc = cells;
+      	g.lcAt = performance.now();
+      	if (g.rotated) { // spun it right before placing: the board tips a tiny bit in the spin's direction, then springs back
+      		const amt = (spin ? 0.045 : 0.028) * (g.ai ? 0.7 : 1) * A.tilt;
+      		g.rotv = (g.rotDir || 1) * amt * 22;
       	}
       	sound("Aplace", 1, ctx2.currentTime, g.vol);
       	if (!g.ai) inp.dcd = performance.now() + handling.dcd * FRAME;
@@ -671,6 +707,7 @@ function place(g) { // place down piece
       	g.grace = g.ai ? 0 : Date.now() + 90;
       	const lines = clear(g, spin);
       	if (lines == 0) garbage(g);
+      	else g.lc = [];
       	bounce(g, lines);
       	spawn(g);
       	if (!g.dead && lost(g)) g.dead = true;
@@ -689,7 +726,17 @@ function place(g) { // place down piece
       function drop(g) { // hard drop; falling any distance after a rotation invalidates the spin
       	const y0 = g.curr.y;
       	while (!collision(g, g.curr.matrix, g.curr.x, g.curr.y + 1)) g.curr.y += 1;
-      	if (g.curr.y != y0) g.rotated = false;
+      	if (g.curr.y != y0) {
+      		g.rotated = false;
+      		const m = g.curr.matrix;
+      		const cols = [];
+      		for (let c = 0; c < m[0].length; c++) { // one streak per piece column, from where it started to where it landed
+      			let top = -1;
+      			for (let r = 0; r < m.length; r++) if (m[r][c]) {top = r; break;}
+      			if (top >= 0) cols.push({x: g.curr.x + c, y: y0 + top, h: g.curr.y - y0});
+      		}
+      		g.trail = {cols: cols, born: performance.now()};
+      	}
       	place(g);
       }
       function rotatem(matrix, dir="cw") { // rotate matrix
@@ -711,6 +758,9 @@ function place(g) { // place down piece
       			g.curr.x += dx;
       			g.curr.y += dy;
       			g.curr.rot = (g.curr.rot + (dir == "ccw" ? 3 : dir == "180" ? 2 : 1)) % 4;
+      			g.rotAt = performance.now();
+      			g.rotAng = dir == "ccw" ? -1 : dir == "180" ? 2 : 1;
+      			g.rotDir = dir == "ccw" ? -1 : dir == "180" ? (Math.random() < 0.5 ? 1 : -1) : 1;
       			g.rotated = true;
       			lock(g);
       			return true;
@@ -727,6 +777,8 @@ function place(g) { // place down piece
       	for (const [dx, dy] of kicks.cw) {
       		if (!collision(g, matrix, g.curr.x + dx, g.curr.y + dy)) {
       			g.curr.name = to;
+      			g.rotAng = 0;
+      			g.rotDir = 1;
       			g.curr.matrix = matrix;
       			g.curr.source = source;
       			g.curr.x += dx;
@@ -763,11 +815,43 @@ function place(g) { // place down piece
       	ctx.fill();
       }
       function drawb(g) { // draw board
+      	const now = performance.now();
+      	const fresh = g.lc.length && now - g.lcAt < 280;
       	for (let y = 0; y < bh; y++) {
       		for (let x = 0; x < bw; x++) {
-      			if (g.board[y][x]) drawc(g, g.board[y][x], x, y);
+      			const cell = g.board[y][x];
+      			if (!cell) continue;
+      			if (fresh && g.lc.some(c => c.x == x && c.y == y)) { // just-landed cells puff up, then settle
+      				const sc = 1 + 0.2 * spike(now - g.lcAt, 16, 230);
+      				const cx = g.left + (x + 0.5) * g.size;
+      				const cy = g.top + (y + 0.5) * g.size;
+      				ctx.save();
+      				ctx.translate(cx, cy);
+      				ctx.scale(sc, sc);
+      				ctx.translate(-cx, -cy);
+      				drawc(g, cell, x, y);
+      				ctx.restore();
+      			} else drawc(g, cell, x, y);
       		}
       	}
+      }
+      function drawcurr(g, now) { // the falling piece: glides between cells, pops in on spawn, and swings into each spin
+      	const c = g.curr;
+      	if (g.vc !== c) {g.vc = c; g.vx = c.x; g.vy = c.y;} // a new piece snaps to its start
+      	const w = c.matrix[0].length;
+      	const h = c.matrix.length;
+      	const age = now - g.spawnAt;
+      	const sc = A.on && age < 200 / A.speed ? 0.7 + 0.3 * easeOutBack(age * A.speed / 200) : 1;
+      	const ang = g.rotAng && A.on ? -g.rotAng * (Math.PI / 2) * (1 - easeOutCubic((now - g.rotAt) * A.speed / 140)) : 0;
+      	const cx = g.left + (g.vx + w / 2) * g.size;
+      	const cy = g.top + (g.vy + h / 2) * g.size;
+      	ctx.save();
+      	ctx.translate(cx, cy);
+      	ctx.rotate(ang);
+      	ctx.scale(sc, sc);
+      	ctx.translate(-cx, -cy);
+      	drawp(g, c.matrix, c.source, g.vx, g.vy, c.name, c.rot);
+      	ctx.restore();
       }
       function drawp(g, piece, source, x, y, name, rot) { // draw piece
       	for (let row = 0; row < piece.length; row++) {
@@ -886,7 +970,7 @@ function place(g) { // place down piece
       	return g.board.map(r => r.reduce((m, c, x) => c ? m | 1 << x : m, 0));
       }
       function aiPps(g) { // survival mode accelerates up to 75% without changing the selected base speed
-      	return g.cfg.pps * (1 + 1.00 * stackPressure(boardRows(g)));
+      	return g.cfg.pps * (1 + 1.00 * stackPressure(boardRows(g))) * cpuSlow(g);
       }
       function setupPotential(rows, nextName=null) { // value setups that the upcoming piece can actually use
       	const key = (nextName || "-") + ":" + rows.join(",");
@@ -1110,7 +1194,9 @@ function place(g) { // place down piece
       		beam = prune(next);
       	}
       	let best = beam[0].first;
-      	const slipRate = opt ? 0 : (levelMistake[g.cfg.level] || 0); // trainer hints (opt) are never flawed
+      	const shaky = !opt && g.shake > 0.01; // a shaking board doubles the odds of a misdrop
+      	g.planShaken = shaky;
+      	const slipRate = opt ? 0 : (levelMistake[g.cfg.level] || 0) * (shaky ? 2 : 1); // trainer hints (opt) are never flawed
       	if (slipRate > 0 && Math.random() < slipRate) {
       		// misjudgement: pick a decent but not best placement; easier levels choose from a wider, sloppier pool
       		const pool = rootCands.filter(n => n.first !== best).sort((x, y) => y.value - x.value);
@@ -1132,6 +1218,7 @@ function place(g) { // place down piece
       		if (thinkFrame == frameId) return; // one think per frame keeps many cpus smooth
 			thinkFrame = frameId;
 			g.plan = think(g);
+			g.lateRolled = false;
       		g.born = time;
       		const n = g.plan.length - 1;
       		const r = g.plan.filter((a, i) => i > 0 && a == g.plan[i - 1] && (a == "left" || a == "right" || a == "down")).length;
@@ -1158,6 +1245,10 @@ function place(g) { // place down piece
       	if (time < g.next) return;
       	const input = g.plan[0];
       	if (input == "drop" && time < g.born + period) return;
+      	if (input == "drop" && g.shake > 0.01 && !g.planShaken && !g.lateRolled) { // started shaking mid-plan: same doubled misdrop odds
+      		g.lateRolled = true;
+      		if (Math.random() < (levelMistake[g.cfg.level] || 0)) {g.plan.unshift(Math.random() < 0.5 ? "left" : "right"); g.next = time + 20; return;}
+      	}
       	g.plan.shift();
       	acts[input](g);
       	if (input == "drop") {
@@ -1165,7 +1256,7 @@ function place(g) { // place down piece
       		return;
       	}
       	const again = g.plan[0] == input && (input == "left" || input == "right" || input == "down");
-      	g.next = time + (again ? Math.min(30, g.step) : g.step) * (0.85 + Math.random() * 0.3);
+      	g.next = time + (again ? Math.min(30, g.step) : g.step) * (0.85 + Math.random() * 0.3) / cpuSlow(g);
       }
       function tick(g, time) { // gravity
       	if (time - g.last > 1000 / gravity) {
@@ -1187,6 +1278,7 @@ function place(g) { // place down piece
       }
       function burst(g, gone, lines) { // create particles
       	const boost = 1 + 0.2 * Math.min(lines, 4);
+      	for (const row of gone) g.fl.push({y: row.y, born: performance.now()});
       	for (const row of gone) {
       		row.cells.forEach((c, x) => {
       			const side = ((x + 0.5) / bw - 0.5) * 10 * boost;
@@ -1222,6 +1314,17 @@ function place(g) { // place down piece
       	if (g.by < 0.0005) g.by = 0;
       	g.shake *= Math.exp(-fxcfg.shakeDecay * dt);
       	if (g.shake < 0.002) g.shake = 0;
+      	g.fdt = dt;
+      	g.rotv += (-170 * g.rot - 15 * g.rotv) * dt; // board tilt: spring with a little overshoot
+      	g.rot += g.rotv * dt;
+      	if (Math.abs(g.rot) < 0.0003 && Math.abs(g.rotv) < 0.003) {g.rot = 0; g.rotv = 0;}
+      	if (g.vc === g.curr && g.curr.name) { // the falling piece glides to its cell
+      		const f = A.on ? 1 - Math.exp(-42 * dt) : 1;
+      		g.vx += (g.curr.x - g.vx) * f;
+      		g.vy += (g.curr.y - g.vy) * f;
+      	}
+      	g.holdA += ((g.hold ? 1 : 0.54) - g.holdA) * (A.on ? 1 - Math.exp(-12 * dt) : 1);
+      	g.fl = g.fl.filter(f => now - f.born < 260);
       	for (const f of g.fx) {
       		f.vy += fxcfg.gravity * dt;
       		f.x += f.vx * dt;
@@ -1233,9 +1336,36 @@ function place(g) { // place down piece
       }
       function fxoffset(g, now) { // board offset in px
       	const wobble = Math.sin(now * 0.088) * 0.6 + Math.sin(now * 0.137 + 1.7) * 0.4;
-      	return {x: g.shake * g.size * wobble, y: g.by * g.size};
+      	return {x: g.shake * g.size * wobble * A.shake, y: g.by * g.size * A.shake};
+      }
+      function drawflash(g, now) { // white row flash on a clear, and the hard drop streak
+      	if (!A.on) {g.trail = null; return;}
+      	for (const f of g.fl) {
+      		const k = (now - f.born) / 260;
+      		if (k >= 1) continue;
+      		const grow = 1 + 0.6 * easeOutCubic(k);
+      		ctx.globalAlpha = 0.75 * (1 - easeOutCubic(k));
+      		ctx.fillStyle = "#ffffff";
+      		ctx.fillRect(g.left, g.top + (f.y + 0.5 - grow / 2) * g.size, bw * g.size, grow * g.size);
+      	}
+      	if (g.trail) {
+      		const k = (now - g.trail.born) / 240;
+      		if (k >= 1) g.trail = null;
+      		else for (const c of g.trail.cols) {
+      			const y0 = g.top + c.y * g.size;
+      			const y1 = g.top + (c.y + c.h) * g.size;
+      			const gr = ctx.createLinearGradient(0, y0, 0, y1);
+      			gr.addColorStop(0, "rgba(255, 255, 255, 0)");
+      			gr.addColorStop(1, `rgba(255, 255, 255, ${(0.4 * (1 - easeOutCubic(k))).toFixed(3)})`);
+      			ctx.globalAlpha = 1;
+      			ctx.fillStyle = gr;
+      			ctx.fillRect(g.left + c.x * g.size, y0, g.size, y1 - y0);
+      		}
+      	}
+      	ctx.globalAlpha = 1;
       }
       function drawfx(g) { // draw particles
+      	drawflash(g, performance.now());
       	const s = g.size;
       	for (const f of g.fx) {
       		const a = Math.min(1, f.life / f.max * 1.6);
@@ -1287,11 +1417,18 @@ function place(g) { // place down piece
       	const t = performance.now() - q.born;
       	const life = 1000;
       	if (t > life) {g.pop = null; return;}
-      	const grow = t < 180 ? 1 + 0.9 * (1 - t / 180) ** 2 - 0.9 * (1 - t / 180) * 0.5 : 1; // pop-in
-      	const fade = 1 - t / life;
+      	const grow = Math.max(0.001, easeOutElastic(A.on ? t * A.speed / 520 : 1)); // springs past full size, then settles
+      	const fade = t < 500 ? 1 : 1 - easeInOutCubic((t - 500) / 500);
       	const fs = Math.min(64, 26 + q.n * 2.5) * Math.min(1.4, g.size / 24 + 0.4);
       	const x = g.left + q.ox * (g.u || 1);
-      	const y = g.top + brh * q.oy;
+      	const y = g.top + brh * q.oy - easeOutCubic(t / life) * 26 * (A.on ? 1 : 0) * (g.u || 1); // drifts upward as it fades
+      	if (t < 420) { // keep the confetti coming, in whatever color the text is right now
+      		q.acc += g.fdt * (45 + q.n * 4);
+      		const k = Math.floor(q.acc);
+      		q.acc -= k;
+      		const kk = g.ai ? Math.round(k * 0.6) : k;
+      		if (kk > 0) confettiAt(x, y - fs * 0.15, popFill(q, t), kk, {dir: -Math.PI / 2 + q.rot * 2, spread: 1.7, speed: 360 + q.n * 10, size: 4 + 3 * Math.min(1.5, g.u || 1)});
+      	}
       	ctx.save();
       	ctx.globalAlpha = Math.max(0, fade);
       	ctx.translate(x, y);
@@ -1305,7 +1442,7 @@ function place(g) { // place down piece
       	ctx.lineWidth = 5;
       	ctx.strokeStyle = "#1a0050";
       	ctx.strokeText(`+${q.n}`, 0, 0);
-      	ctx.fillStyle = `hsl(${hue}, 100%, ${Math.floor(t / 70) % 2 ? 85 : 65}%)`;
+      	ctx.fillStyle = popFill(q, t);
       	ctx.fillText(`+${q.n}`, 0, 0);
       	if (q.perfect) {
       		ctx.font = `bold ${Math.max(12, fs * 0.38)}px Kanchenjunga`;
@@ -1328,6 +1465,13 @@ function place(g) { // place down piece
 	const off = fxoffset(g, now);
 	ctx.save();
 	ctx.translate(off.x, off.y); // bounce and shake everything
+	if (g.rot) { // spin-tilt around the board's center
+		const tcx = g.left + brw / 2;
+		const tcy = g.top + brh / 2;
+		ctx.translate(tcx, tcy);
+		ctx.rotate(g.rot);
+		ctx.translate(-tcx, -tcy);
+	}
 	const fell = g.dead && g.diedAt ? (now - g.diedAt) / 1000 : -1; // seconds since this board topped out
 	if (fell >= 0) { // loser's board falls out of existence
 		const cx = g.left + brw / 2;
@@ -1354,7 +1498,7 @@ function place(g) { // place down piece
 		ctx.fillRect(g.left, g.top, brw, brh);
 		gridlines(g);
 		drawb(g);
-		if (g.curr.name) drawp(g, g.curr.matrix, g.curr.source, g.curr.x, g.curr.y, g.curr.name, g.curr.rot);
+		if (g.curr.name) drawcurr(g, now);
 		if (!g.ai && !g.dead) {
 			ctx.globalAlpha = 0.54;
 			let gdy = 0;
@@ -1365,8 +1509,12 @@ function place(g) { // place down piece
 		}
 		if (trainOn(g) && !g.dead && !over) drawhint(g);
 		const incoming = Math.min(g.pending.reduce((a, c) => a + c.n, 0), bh);
-		ctx.fillStyle = incoming >= cap ? "#ff0000" : "#ff8800";
-		ctx.fillRect(g.left - 8 * u, g.top + brh - incoming * g.size, 6 * u, incoming * g.size);
+		g.dispIn += (incoming - g.dispIn) * (A.on ? 1 - Math.exp(-12 * g.fdt) : 1); // meter glides to its value
+		if (Math.abs(incoming - g.dispIn) < 0.01) g.dispIn = incoming;
+		g.dispRed += ((incoming >= cap ? 1 : 0) - g.dispRed) * (A.on ? 1 - Math.exp(-10 * g.fdt) : 1);
+		ctx.fillStyle = `rgb(255, ${Math.round(136 * (1 - g.dispRed))}, 0)`;
+		const mw = 6 * u * (1 + 0.9 * spike(now - g.inAt, 60, 420)); // the meter fattens when garbage arrives
+		ctx.fillRect(g.left - 2 * u - mw, g.top + brh - g.dispIn * g.size, mw, g.dispIn * g.size);
 		drawfx(g);
 	}
 	ctx.restore();
@@ -1376,7 +1524,14 @@ function place(g) { // place down piece
 		ctx.textAlign = "center";
 		ctx.fillStyle = "#bdb7ff";
 		ctx.font = `bold ${Math.max(14, Math.round(44 * u))}px Kanchenjunga`;
-		ctx.fillText(`#${g.place}`, g.left + brw / 2, g.top + brh / 2);
+		{const gt = fell - 2;
+		const gk = easeOutElastic(A.on ? gt * A.speed / 0.6 : 1);
+		ctx.save();
+		ctx.translate(g.left + brw / 2, g.top + brh / 2);
+		ctx.scale(gk, gk);
+		ctx.globalAlpha = A.on ? easeOutCubic(gt * A.speed / 0.3) : 1;
+		ctx.fillText(`#${g.place}`, 0, 0);
+		ctx.restore();}
 		ctx.textAlign = "start";
 	}
 	const qs = Math.min(g.size * 0.7, brh / 20);
@@ -1384,31 +1539,68 @@ function place(g) { // place down piece
 	if (!gone) {
 		ctx.fillStyle = "#03000f";
 		ctx.fillRect(ql, g.top, 4 * qs, 14 * qs);
+		const qoff = A.on ? -3 * (1 - easeOutBack((now - g.qAt) * A.speed / 300)) : 0; // queue slides down a slot with a little bounce
+		ctx.save();
+		ctx.beginPath();
+		ctx.rect(ql - qs, g.top, 6 * qs, 14 * qs);
+		ctx.clip();
 		for (let i = 0; i < 5; i++) {
 			const name = g.bag[i];
-			const top = 12 - 3 * i;
+			const top = 12 - 3 * i + qoff;
 			if (i == 0) {ctx.shadowColor = "rgba(255, 255, 255, 0.85)"; ctx.shadowBlur = qs * 0.7;} // glow on the next piece
 			drawm(g, name, name == "I" || name == "O" ? 0 : 0.5, top, ql, g.top, qs);
 			ctx.shadowBlur = 0;
 			ctx.shadowColor = "transparent";
 			if (i < 4) for (let x = 0; x < 4; x++) drawc(g, trash, x, top - 1, ql, g.top, qs);
 		}
+		ctx.restore();
 		drawpop(g, brh);
 		arrow(ql + 2 * qs, g.top + 14.3 * qs, qs * 1.2, "#33ff33");
 		const hy = g.top + 15.8 * qs;
 		if (g.held.name) {
-			ctx.globalAlpha = g.hold ? 1 : 0.54;
+			ctx.globalAlpha = g.holdA;
+			const hs = 1 + 0.4 * spike(now - g.holdAt, 16, 340); // held piece pops when you swap
+			ctx.save();
+			ctx.translate(ql + 2 * qs, hy + qs);
+			ctx.scale(hs, hs);
+			ctx.translate(-(ql + 2 * qs), -(hy + qs));
 			drawm(g, g.held.name, g.held.name == "I" || g.held.name == "O" ? 0 : 0.5, 0, ql, hy, qs);
+			ctx.restore();
 			ctx.globalAlpha = 1;
 		}
 		arrow(ql + 2 * qs, hy + 2.3 * qs, qs * 1.2, "#ff3333");
 	}
-	ctx.globalAlpha = gone ? 0.45 : 1;
+	g.fade += ((gone ? 0.45 : 1) - g.fade) * (A.on ? 1 - Math.exp(-6 * g.fdt) : 1);
+	ctx.globalAlpha = g.fade;
 	ctx.font = `bold ${Math.max(9, Math.round(24 * u))}px Kanchenjunga`;
 	ctx.fillStyle = "#bdb7ff";
-	[`${g.combo} Combo`, `${g.surge} Surge`, `${g.sent} Sent`].forEach((t, i) => {
-		ctx.fillText(t, g.left - 60 * u - t.length * 8.5 * u, g.top + (30 + 35 * i) * u);
-	});
+	{
+		const hv = [g.combo, g.surge, g.sent];
+		const hn = ["Combo", "Surge", "Sent"];
+		const h = g.hud;
+		const sm = A.on ? 1 - Math.exp(-14 * g.fdt) : 1;
+		hv.forEach((v, i) => {
+			const y = g.top + (30 + 35 * i) * u;
+			let up = 0;
+			if (v !== h.t[i]) { // value changed: the text spikes up in size, then eases back
+				h.at[i] = now;
+				if (v > h.t[i]) up = v - h.t[i];
+				h.t[i] = v;
+			}
+			h.d[i] += (v - h.d[i]) * sm; // the number counts toward its value instead of snapping
+			if (Math.abs(v - h.d[i]) < 0.03) h.d[i] = v;
+			const t = `${Math.round(h.d[i])} ${hn[i]}`;
+			const x = g.left - 60 * u - t.length * 8.5 * u;
+			const w = ctx.measureText(t).width;
+			const sc = 1 + 0.4 * spike(now - h.at[i], 4, 380);
+			if (up > 0 && !gone) confettiAt(x + w / 2, y - 10 * u, "#bdb7ff", Math.round((3 + Math.min(up, 8)) * (g.ai ? 0.5 : 1)), {dir: -Math.PI * 0.75, spread: 1.3, speed: 280, size: 3 + 3 * Math.min(1.5, u)}); // same color as the text
+			ctx.save();
+			ctx.translate(x + w / 2, y - 7 * u);
+			ctx.scale(sc, sc);
+			ctx.fillText(t, -w / 2, 7 * u);
+			ctx.restore();
+		});
+	}
 	ctx.globalAlpha = 1;
 }
       function drawmenu(cw, ch) { // draw menu options
@@ -1443,6 +1635,7 @@ function place(g) { // place down piece
 		else if (row.type == "assist") text = `Infinite combo assist:  < ${setup.comboAssist ? "on" : "off"} >`;
 		else if (row.type == "trainer") text = `Trainer:  < ${setup.trainer ? "on" : "off"} >`;
 		else if (row.type == "boards") text = `Force all boards visible:  < ${setup.forceAllBoards ? "on" : "off"} >`;
+		else if (row.type == "anim") text = `Animations:  < ${A.name} >`;
 		else if (row.type == "controls") text = "Settings  >";
 		if (i == sel) {
 			ctx.fillStyle = "#2a0a6b";
@@ -1692,7 +1885,8 @@ function render(time) { // render board
 		ctx.fillStyle = "#bdb7ff";
 	}
 	if (over) {
-		ctx.fillStyle = "rgba(0, 0, 0, 0.55)";
+		const ot = (performance.now() - over) / 1000;
+		ctx.fillStyle = `rgba(0, 0, 0, ${(0.55 * (A.on ? easeOutCubic(ot * A.speed / 0.5) : 1)).toFixed(3)})`; // dim eases in
 		ctx.beginPath();
 		ctx.rect(0, 0, cw, ch);
 		const win = gs.find(g => !g.dead);
@@ -1701,10 +1895,38 @@ function render(time) { // render board
 		const [title, sub] = overmsg(win);
 		ctx.fillStyle = "#bdb7ff";
 		ctx.font = "bold 64px Kanchenjunga";
-		ctx.fillText(title, cw / 2, ch / 2);
+		const tw = ctx.measureText(title).width;
+		const ts = Math.max(0.001, easeOutElastic(A.on ? ot * A.speed / 0.9 : 1));
+		ctx.save();
+		ctx.translate(cw / 2, ch / 2);
+		ctx.scale(ts, ts); // title springs in
+		ctx.globalAlpha = A.on ? easeOutCubic(ot * A.speed / 0.25) : 1;
+		ctx.fillText(title, 0, 0);
+		ctx.restore();
+		const cel = tour && tour.champ ? !!tour.champ.human : !!win && (p.ai || win === p);
+		if (cel) { // confetti in the title's color
+			if (celebrateFor !== over) {
+				celebrateFor = over;
+				celebAcc = 0;
+				confettiAt(cw / 2, ch / 2, "#bdb7ff", 110, {speed: 900, spread: Math.PI * 1.3, size: 9, wide: Math.min(cw * 0.5, tw)});
+			}
+			if (ot < 3) {
+				celebAcc += Math.min(0.05, (performance.now() - (lastConfT || performance.now())) / 1000) * 70;
+				const k = Math.floor(celebAcc);
+				celebAcc -= k;
+				if (k > 0) confettiAt(Math.random() * cw, -12, "#bdb7ff", k, {dir: Math.PI / 2, spread: 0.7, speed: 160, size: 8});
+			}
+		}
 		ctx.font = "bold 24px Kanchenjunga";
-		ctx.fillText(sub, cw / 2, ch / 2 + 40);
+		const sk = A.on ? easeOutCubic((ot * A.speed - 0.35) / 0.5) : 1;
+		ctx.globalAlpha = sk;
+		ctx.fillText(sub, cw / 2, ch / 2 + 40 + 14 * (1 - sk));
+		ctx.globalAlpha = 1;
 	}
+	const cn = performance.now();
+	confettiStep(Math.min(0.05, (cn - (lastConfT || cn)) / 1000));
+	lastConfT = cn;
+	confettiDraw();
 	ctx.textAlign = "start";
 	requestAnimationFrame(render);
 }
@@ -1750,6 +1972,93 @@ function render(time) { // render board
       const spawny = -2; // pieces spawn 2 rows above the playfield
       let over = 0; // time the round ended, 0 while playing
       const width = 10;
+      const clamp01 = v => v < 0 ? 0 : v > 1 ? 1 : v;
+      const easeOutCubic = x => 1 - (1 - clamp01(x)) ** 3;
+      const easeInOutCubic = x => {x = clamp01(x); return x < 0.5 ? 4 * x * x * x : 1 - (-2 * x + 2) ** 3 / 2;};
+      const easeOutBack = x => {x = clamp01(x); return 1 + 2.70158 * (x - 1) ** 3 + 1.70158 * (x - 1) ** 2;};
+      const easeOutElastic = x => {x = clamp01(x); return x == 0 ? 0 : x == 1 ? 1 : 2 ** (-10 * x) * Math.sin((x * 10 - 0.75) * 2 * Math.PI / 3) + 1;};
+      function spike(age, up = 70, down = 300) { // 0 -> 1 -> 0: shoots up fast, then eases back down
+      	if (age < 0 || !A.on) return 0;
+      	up /= A.speed;
+      	down /= 1 + (A.speed - 1) * 0.5;
+      	return A.size * (age < up ? easeOutCubic(age / up) : 1 - easeInOutCubic((age - up) / down));
+      }
+      const animPresets = [ // the Animations menu setting
+      	{name: "Off", on: false, speed: 1, size: 0, conf: 0, tilt: 0, shake: 0},
+      	{name: "Subtle", on: true, speed: 1, size: 0.5, conf: 0.4, tilt: 0.6, shake: 0.6},
+      	{name: "Normal", on: true, speed: 1, size: 1, conf: 1, tilt: 1, shake: 1},
+      	{name: "Snappy", on: true, speed: 2.5, size: 1.2, conf: 1, tilt: 1, shake: 1}, // spikes rise 2.5x faster
+      	{name: "Extreme", on: true, speed: 2.5, size: 2, conf: 2, tilt: 2, shake: 1.5}
+      ];
+      let A = animPresets[2];
+      try {const d = Number(localStorage.getItem("4wide-anim")); if (Number.isInteger(d) && animPresets[d]) A = animPresets[d];} catch (e) {}
+      function setAnim(i) { // change and remember the animation setting
+      	A = animPresets[i];
+      	try {localStorage.setItem("4wide-anim", String(i));} catch (e) {}
+      }
+      let confetti = []; // screen-space confetti
+      let celebrateFor = 0; // which round's win confetti already fired
+      let celebAcc = 0;
+      let lastConfT = 0;
+      let shownRating = null; // the rating shown in the corner counts toward the real one
+      let shownAt = 0;
+      let deltaSeen = 0;
+      function confettiAt(x, y, color, n, o = {}) { // n confetti pieces of one color
+      	n = Math.round(n * A.conf);
+      	const dir = o.dir ?? -Math.PI / 2;
+      	const spread = o.spread ?? Math.PI;
+      	const speed = o.speed ?? 500;
+      	const sz = o.size ?? 7;
+      	const wide = o.wide ?? 0;
+      	for (let i = 0; i < n; i++) {
+      		const a = dir + (Math.random() - 0.5) * spread;
+      		const v = speed * (0.35 + Math.random() * 0.65);
+      		const life = 1.1 + Math.random() * 0.9;
+      		confetti.push({x: x + (Math.random() - 0.5) * wide, y: y, vx: Math.cos(a) * v, vy: Math.sin(a) * v, rot: Math.random() * 6.28, vr: (Math.random() - 0.5) * 16, ph: Math.random() * 6.28, w: sz * (0.6 + Math.random() * 0.8), h: sz * (0.35 + Math.random() * 0.5), color: color, life: life, max: life});
+      	}
+      	if (confetti.length > 900) confetti.splice(0, confetti.length - 900);
+      }
+      function confettiStep(dt) {
+      	const drag = Math.exp(-2.2 * dt);
+      	for (const c of confetti) {
+      		c.vy += 900 * dt;
+      		c.vx *= drag;
+      		c.vy *= drag;
+      		c.x += c.vx * dt;
+      		c.y += c.vy * dt;
+      		c.rot += c.vr * dt;
+      		c.ph += 9 * dt; // tumbling
+      		c.life -= dt;
+      	}
+      	confetti = confetti.filter(c => c.life > 0);
+      }
+      function confettiDraw() {
+      	for (const c of confetti) {
+      		ctx.globalAlpha = Math.min(1, c.life / c.max * 2);
+      		ctx.fillStyle = c.color;
+      		ctx.save();
+      		ctx.translate(c.x, c.y);
+      		ctx.rotate(c.rot);
+      		ctx.scale(1, Math.cos(c.ph));
+      		ctx.fillRect(-c.w / 2, -c.h / 2, c.w, c.h);
+      		ctx.restore();
+      	}
+      	ctx.globalAlpha = 1;
+      }
+      function popFill(q, t) { // the +N text's fill color at time t (confetti copies it)
+      	return `hsl(${(q.hue + t * 0.6) % 360}, 100%, ${Math.floor(t / 70) % 2 ? 85 : 65}%)`;
+      }
+      function popBurst(g, q, c, perfect) { // opening confetti burst for a +N text
+      	const x = g.left + q.ox * (g.u || 1);
+      	const y = g.top + bh * g.size * q.oy;
+      	const k = g.ai ? 0.6 : 1;
+      	const sz = 5 + 4 * Math.min(1.5, g.u || 1);
+      	confettiAt(x, y, popFill(q, 0), Math.round(Math.min(70, 12 + c * 3) * k), {speed: 520 + c * 12, spread: Math.PI * 1.1, size: sz, wide: 40});
+      	if (perfect) confettiAt(x, y + 20, "#ffffff", Math.round(50 * k), {speed: 650, spread: Math.PI * 1.6, size: sz + 1}); // PERFECT CLEAR text is white
+      }
+      function cpuSlow(g) { // cpus play slower while their board shakes, easing back as the shake dies
+      	return 1 - 0.5 * clamp01(g.shake / 0.06);
+      }
       const fxcfg = {
       	bounceBase: 0.12, // board bounciness
       	bounceLine: 0.08, // extra bounciness per line
@@ -1856,7 +2165,13 @@ function render(time) { // render board
       function updateRatingBox() { // top left rank and rating
       	const box = document.getElementById("ratingbox");
       	if (!box) return;
-		let rk = rankOf(rating);
+		const nowT = performance.now();
+		if (shownRating === null) shownRating = rating;
+		shownRating += (rating - shownRating) * (1 - Math.exp(-5 * Math.min(0.1, (nowT - (shownAt || nowT)) / 1000))); // rating counts up/down
+		shownAt = nowT;
+		if (!A.on) shownRating = rating;
+		if (Math.abs(rating - shownRating) < 0.5) shownRating = rating;
+		let rk = rankOf(shownRating);
 		let colors = {
 			"F": "#755970",
 			"D-": "#79547b",
@@ -1879,8 +2194,13 @@ function render(time) { // render board
 			"X": "#ff6051",
 			"X+": "#f75267"
 		};
-      	let t = `<span class="rk" style="color: ${colors[rk]}">${rk}</span>${Math.round(rating)}`;
-      	if (ratingDelta != 0 && performance.now() - ratingDeltaAt < 8000) t += ` <span style="color:${ratingDelta > 0 ? "#66ff88" : "#ff7777"}">${ratingDelta > 0 ? "+" : ""}${ratingDelta}</span>`;
+      	let t = `<span class="rk" style="color: ${colors[rk]}">${rk}</span>${Math.round(shownRating)}`;
+      	const dAge = performance.now() - ratingDeltaAt;
+      	if (ratingDelta != 0 && dAge < 8000) {
+      		const dc = ratingDelta > 0 ? "#66ff88" : "#ff7777";
+      		if (deltaSeen !== ratingDeltaAt) {deltaSeen = ratingDeltaAt; confettiAt(125, 22, dc, 46, {dir: -Math.PI / 2, spread: 2.4, speed: 420, size: 6});} // confetti in the delta's color
+      		t += ` <span class="delta" style="color:${dc};${A.on ? "" : "animation:none;"}animation-delay:-${Math.min(700, Math.round(dAge))}ms;opacity:${dAge > 7400 ? ((8000 - dAge) / 600).toFixed(2) : 1}">${ratingDelta > 0 ? "+" : ""}${ratingDelta}</span>`;
+      	}
       	if (screen == "play" && unrated && p && !p.ai) t += ` <span style="font-size:14px">(unrated)</span>`;
       	if (t != ratingText) {box.innerHTML = t; ratingText = t;}
       }
@@ -2155,6 +2475,7 @@ let frameId = 0;
 			else if (row.type == "assist") setup.comboAssist = !setup.comboAssist;
 			else if (row.type == "trainer") setup.trainer = !setup.trainer;
 			else if (row.type == "boards") setup.forceAllBoards = !setup.forceAllBoards;
+			else if (row.type == "anim") setAnim((animPresets.indexOf(A) + d + animPresets.length) % animPresets.length);
 			else if (row.type == "pieces") bagc = (bagc + d + names.length) % names.length;
 		} else if (/^[0-9]$/.test(key) && (row.type == "skill" || row.type == "cpu")) {
 			setlevel(cfg, key == "0" ? 9 : key - 1);
