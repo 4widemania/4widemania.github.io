@@ -1850,15 +1850,15 @@ function render(time) { // render board
 	} else {
 		for (const g of gs) draw(g);
 	}
-	{ // match stopwatch, top left; freezes when the round ends
+	{ // match stopwatch, top right; freezes when the round ends
 		const el = Math.max(0, ((over || performance.now()) - gs[0].startT) / 1000);
 		const mm = Math.floor(el / 60);
 		const ss = el - mm * 60;
 		ctx.save();
-		ctx.textAlign = "left";
+		ctx.textAlign = "right";
 		ctx.font = "bold 22px Kanchenjunga";
-		ctx.fillStyle = el * 1000 >= MERCY_AFTER ? "#ffb0b0" : "#bdb7ff"; // tinted once mercy rule is live
-		ctx.fillText(`${mm}:${ss < 10 ? "0" : ""}${ss.toFixed(1)}`, 14, 26);
+		ctx.fillStyle = el * 1000 >= MERCY_AFTER ? "#ff98e6" : "#bdb7ff"; // tinted once mercy rule is live
+		ctx.fillText(`${mm}:${ss < 10 ? "0" : ""}${ss.toFixed(1)}`, canvas.width - 14, 26);
 		ctx.restore();
 	}
 	ctx.textAlign = "center";
