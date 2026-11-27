@@ -280,7 +280,7 @@ function recv(o, n, hole) { // a board receives garbage: it shakes now, while th
 	hit(o, n);
 	o.inAt = performance.now();
 }
-const MERCY_AFTER = 120000; // mercy rule only kicks in once the match is this old (ms)
+const MERCY_AFTER = 90000; // mercy rule only kicks in once the match is this old (ms)
 const MERCY_RATIO = 5; // lose when garbage piled up >= this many times what you've sent
 const MERCY_MIN = 10; // ...and at least this many lines, so a board that sent 0 isn't killed by a couple of lines
 function piled(g) { // garbage stuck on you: pending + garbage rows already on the board
